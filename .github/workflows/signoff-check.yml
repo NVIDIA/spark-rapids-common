@@ -1,0 +1,15 @@
+name: signoff check
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  signoff-check:
+    uses: ./signoff.yml@main
+    with:
+      owner: NVIDIA
+      repo: spark-rapids-common
+      pull_number: ${{ github.event.number }}
+    secrets:
+      token: ${{ secrets.GITHUB_TOKEN }}
