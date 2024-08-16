@@ -1,0 +1,5 @@
+name: 'signoff check action'
+description: 'check if PR got signed off'
+runs:
+  using: 'docker'
+  image: 'Dockerfile'

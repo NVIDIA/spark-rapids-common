@@ -1,0 +1,32 @@
+# A workflow to check if PR got sign-off
+name: signoff-ci
+
+on:
+  workflow_call:
+    inputs:
+      owner:
+        required: true
+        type: string
+      repo:
+        required: true
+        type: string
+      pull_number:
+        required: true
+        type: string
+    secrets:
+      token:
+        required: true
+
+jobs:
+  signoff-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: signoff-check job
+        uses: ./.github/workflows/signoff-check
+        env:
+          OWNER: ${{ inputs.owner }}
+          REPO_NAME: ${{ inputs.repo }}
+          GITHUB_TOKEN: ${{ secrets.token }}
+          PULL_NUMBER: ${{ inputs.pull_number }}
