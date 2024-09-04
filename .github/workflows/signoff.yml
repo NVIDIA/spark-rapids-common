@@ -23,7 +23,7 @@ jobs:
   signoff-check:
     runs-on: ubuntu-latest
     steps:
-      - name: test
+      - name: signoff
         uses: NVIDIA/spark-rapids-common/signoff-check@main
         with:
           owner: NVIDIA
