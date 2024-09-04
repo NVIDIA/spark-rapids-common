@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# A workflow to check if PR got sign-off
 name: signoff check
 
 on:
@@ -20,10 +21,12 @@ on:
 
 jobs:
   signoff-check:
-    uses: ./.github/workflows/signoff-workflow.yml@main
-    with:
-      owner: NVIDIA
-      repo: spark-rapids-common
-      pull_number: ${{ github.event.number }}
-    secrets:
-      token: ${{ secrets.GITHUB_TOKEN }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: test
+        uses: NVIDIA/spark-rapids-common/signoff-check@main
+        with:
+          owner: NVIDIA
+          repo: spark-rapids-jni
+          pull_number: ${{ github.event.number }}
+          token: ${{ secrets.GITHUB_TOKEN }}
