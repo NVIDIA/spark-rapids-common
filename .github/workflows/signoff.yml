@@ -27,6 +27,6 @@ jobs:
         uses: NVIDIA/spark-rapids-common/signoff-check@main
         with:
           owner: NVIDIA
-          repo: spark-rapids-jni
+          repo: spark-rapids-common
           pull_number: ${{ github.event.number }}
           token: ${{ secrets.GITHUB_TOKEN }}
