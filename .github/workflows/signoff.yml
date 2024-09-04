@@ -12,35 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# A workflow to check if PR got sign-off
-name: signoff-ci
+name: signoff check
 
 on:
-  workflow_call:
-    inputs:
-      owner:
-        required: true
-        type: string
-      repo:
-        required: true
-        type: string
-      pull_number:
-        required: true
-        type: string
-    secrets:
-      token:
-        required: true
+  pull_request_target:
+    types: [opened, synchronize, reopened]
 
 jobs:
   signoff-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: signoff-check job
-        uses: ./.github/workflows/signoff-check
-        env:
-          OWNER: ${{ inputs.owner }}
-          REPO_NAME: ${{ inputs.repo }}
-          GITHUB_TOKEN: ${{ secrets.token }}
-          PULL_NUMBER: ${{ inputs.pull_number }}
+    uses: ./.github/workflows/signoff-workflow.yml@main
+    with:
+      owner: NVIDIA
+      repo: spark-rapids-common
+      pull_number: ${{ github.event.number }}
+    secrets:
+      token: ${{ secrets.GITHUB_TOKEN }}
