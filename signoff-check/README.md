@@ -19,10 +19,10 @@ jobs:
       # ...
       - name: signoff
         uses: NVIDIA/spark-rapids-common/signoff-check@main
-        with:
-          owner: ${{ github.repository_owner }} # could change to a specific owner
-          repo: ${{ github.repository }} # could change to a specific repo name
-          pull_number: ${{ github.event.number }} # could change to a specific pr number
-          token: ${{ secrets.GITHUB_TOKEN }} # could change to a specific token
+        with: # The following can all be modified to the necessary values.
+          owner: ${{ github.repository_owner }}
+          repo: ${{ github.repository }}
+          pull_number: ${{ github.event.number }}
+          token: ${{ secrets.GITHUB_TOKEN }}
     # ...
 ```
