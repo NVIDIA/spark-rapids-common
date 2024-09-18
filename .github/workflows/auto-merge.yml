@@ -1,0 +1,84 @@
+# Copyright (c) 2024, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# A reusable workflow to automerge commits from Current to Next Release if exists
+
+name: auto-merge
+
+on:
+  workflow_call:
+    inputs:
+      owner:
+        required: true
+        type: string
+      repo:
+        required: true
+        type: string
+      branch: # github.event.pull_request.base.ref
+        required: true
+        type: string
+    secrets:
+      token:
+        required: true
+
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+
+    steps:
+      # TODO: make this step as a shared action
+      - name: Generate target branch
+        id: generate_version
+        run: |
+          current_branch="${{ inputs.branch }}"
+          version=${current_branch#branch-}
+          
+          IFS='.' read -r -a parts <<< "$version"
+          year=${parts[0]}
+          month=${parts[1]}
+          month=$((10#$month + 2))
+          if [ $month -gt 12 ]; then
+            month=$((month - 12))
+            year=$((year + 1))
+          fi
+
+          next_release=$(printf "%02d.%02d" $year $month)
+          echo "Next release is $next_release"
+          echo "target_branch=branch-$next_release" >> $GITHUB_ENV
+
+      # TODO: make this step as a shared action
+      - name: Check if target branch exists
+        id: check_branch
+        run: |
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/${{ inputs.owner }}/${{ inputs.repo }}/branches/${{ env.target_branch }})
+          echo "Response code: $CODE..."
+
+          if [ $CODE -eq 200 ]; then
+            echo "branch_exists=true" >> $GITHUB_ENV
+          else
+            echo "branch_exists=false" >> $GITHUB_ENV
+            echo "Failed to find ${BRANCH_NAME}. Skip auto-merge..."
+          fi
+
+      - name: auto-merge job
+        if: env.branch_exists == 'true'
+        uses: NVIDIA/spark-rapids-common/auto-merge@auto-merge
+        env:
+          OWNER: ${{ inputs.owner }}
+          REPO_NAME: ${{ inputs.repo }}
+          HEAD: ${{ inputs.branch }}
+          BASE: ${{ env.target_branch }}
+          AUTOMERGE_TOKEN: ${{ secrets.token }}
