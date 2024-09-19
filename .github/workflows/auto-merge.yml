@@ -75,7 +75,7 @@ jobs:
 
       - name: auto-merge job
         if: env.branch_exists == 'true'
-        uses: NVIDIA/spark-rapids-common/auto-merge@auto-merge
+        uses: NVIDIA/spark-rapids-common/auto-merge@main
         env:
           OWNER: ${{ inputs.owner }}
           REPO_NAME: ${{ inputs.repo }}
