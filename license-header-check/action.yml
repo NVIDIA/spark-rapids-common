@@ -47,6 +47,7 @@ runs:
         pushd ./license-header-check
         docker build -t license-header-check -f Dockerfile .
         docker run --rm \
+          -v ${GITHUB_WORKSPACE}:/code \
           -e OWNER="${{ inputs.owner }}" \
           -e REPO_NAME="${{ inputs.repo }}" \
           -e GITHUB_TOKEN="${{ inputs.token }}" \
