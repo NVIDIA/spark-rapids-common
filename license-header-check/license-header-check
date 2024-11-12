@@ -19,6 +19,7 @@ The tool checks if all files in the repo contain the license header.
 NOTE: this script is for github actions only, you should not use it anywhere else.
 """
 import os
+import subprocess
 import sys
 import fnmatch
 from argparse import ArgumentParser
@@ -31,9 +32,14 @@ LICENSE_PATTERN = ["NVIDIA CORPORATION", "Licensed under the Apache License"]
 
 def getDiffFiles(owner, repo_name, pull_number, token):
     gh = Github(token)
-    pr = gh.get_repo(f'{owner}/{repo_name}').get_pull(pull_number)
+    repo = gh.get_repo(f'{owner}/{repo_name}')
+    pr = repo.get_pull(pull_number)
     changed_files = pr.get_files()
     files = [file.filename for file in changed_files]
+    # checkout source code
+    head_ref = pr.head.ref
+    subprocess.run(f"git clone {repo.clone_url} /code && git checkout {head_ref}", shell=True, check=True)
+
     return files
 
 def filterFiles(files, excludes):
