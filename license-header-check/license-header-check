@@ -18,13 +18,21 @@
 The tool checks if all files in the repo contain the license header.
 NOTE: this script is for github actions only, you should not use it anywhere else.
 """
+import os
 import sys
 import fnmatch
 from argparse import ArgumentParser
 
+from github import Github
+
 # Default configs
 EXCLUDES = ['NOTICE', '*.md']
 LICENSE_PATTERN = ["NVIDIA CORPORATION", "Licensed under the Apache License"]
+
+def getDiffFiles(owner, repo, pull_number, token):
+    gh = Github(token)
+    pr = gh.get_repo(f'{owner}/{repo}').get_pull(pull_number)
+    return pr.get_files()
 
 def filterFiles(files, excludes):
     excluded_files = []
@@ -46,8 +54,9 @@ def checkLicenseHeader(files, license_pattern):
                     no_license_files.append(file)
     return no_license_files
 
-def main(files, excludes, license_pattern):
+def main(repo_name, pull_number, token, excludes, license_pattern):
     try:
+        files = getDiffFiles(repo_name, pull_number, token)
         files, excluded_files = filterFiles(files, excludes)
         no_license_files = checkLicenseHeader(files, license_pattern)
         warning_message = ""
@@ -65,16 +74,25 @@ def main(files, excludes, license_pattern):
 
 if __name__ == '__main__':
     parser = ArgumentParser(description="license header check")
-    parser.add_argument("--files", help="files added or updated in PR", default='')
+    parser.add_argument("--owner", help="repo owner", default='')
+    parser.add_argument("--repo_name", help="repo name", default='')
+    parser.add_argument("--pull_number", help="pull request number", type=int)
+    parser.add_argument("--token", help="github token, will use GITHUB_TOKEN if empty", default='')
     parser.add_argument("--excludes", help="excluded files", default=EXCLUDES)
     parser.add_argument("--license_pattern", help="license/copyright pattern", default=LICENSE_PATTERN)
     args = parser.parse_args()
 
-    FILES = args.files
-    assert FILES, 'FILES should not be empty'
+    OWNER = args.owner if args.owner else os.environ.get('OWNER')
+    assert OWNER, 'env OWNER should not be empty'
+    REPO_NAME = args.repo_name if args.repo_name else os.environ.get('REPO_NAME')
+    assert REPO_NAME, 'REPO_NAME should not be empty'
+    PULL_NUMBER = args.pull_number if args.pull_number else int(os.environ.get('PULL_NUMBER'))
+    assert PULL_NUMBER, 'env PULL_NUMBER should not be empty'
+    GITHUB_TOKEN = args.token if args.token else os.environ.get('GITHUB_TOKEN')
+    assert GITHUB_TOKEN, 'env GITHUB_TOKEN should not be empty'
     EXCLUDES = args.excludes if args.excludes else EXCLUDES
     assert EXCLUDES, 'EXCLUDES should not be empty'
     LICENSE_PATTERN = args.license_pattern if args.license_pattern else LICENSE_PATTERN
     assert LICENSE_PATTERN, 'LICENSE_PATTERN should not be empty'
 
-    main(files=FILES, excludes=EXCLUDES, license_pattern=LICENSE_PATTERN)
+    main(owner=OWNER, repo_name=REPO_NAME, pull_number=PULL_NUMBER, token=GITHUB_TOKEN, excludes=EXCLUDES, license_pattern=LICENSE_PATTERN)
