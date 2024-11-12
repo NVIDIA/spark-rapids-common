@@ -29,9 +29,9 @@ from github import Github
 EXCLUDES = ['NOTICE', '*.md']
 LICENSE_PATTERN = ["NVIDIA CORPORATION", "Licensed under the Apache License"]
 
-def getDiffFiles(owner, repo, pull_number, token):
+def getDiffFiles(owner, repo_name, pull_number, token):
     gh = Github(token)
-    pr = gh.get_repo(f'{owner}/{repo}').get_pull(pull_number)
+    pr = gh.get_repo(f'{owner}/{repo_name}').get_pull(pull_number)
     return pr.get_files()
 
 def filterFiles(files, excludes):
@@ -56,7 +56,7 @@ def checkLicenseHeader(files, license_pattern):
 
 def main(owner, repo_name, pull_number, token, excludes, license_pattern):
     try:
-        files = getDiffFiles(repo_name, pull_number, token)
+        files = getDiffFiles(owner, repo_name, pull_number, token)
         files, excluded_files = filterFiles(files, excludes)
         no_license_files = checkLicenseHeader(files, license_pattern)
         warning_message = ""
