@@ -14,6 +14,41 @@
 
 name: 'license-header-check action'
 description: 'check license/copyright header'
+inputs:
+  owner:
+    description: "Repository Owner"
+    required: true
+    type: string
+  repo:
+    description: "Repository name"
+    required: true
+    type: string
+  pull_number:
+    description: "Pull request number"
+    required: true
+    type: string
+  token:
+    description: "GitHub token"
+    required: true
+    type: string
+
 runs:
-  using: 'docker'
-  image: 'Dockerfile'
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        repository: YanxuanLiu/spark-rapids-common
+        ref: license-header-check
+
+    - name: Run License header check in Docker
+      shell: bash
+      run: |
+        pushd ./license-header-check
+        docker build -t license-header-check -f Dockerfile .
+        docker run --rm \
+          -e OWNER="${{ inputs.owner }}" \
+          -e REPO_NAME="${{ inputs.repo }}" \
+          -e GITHUB_TOKEN="${{ inputs.token }}" \
+          -e PULL_NUMBER="${{ inputs.pull_number }}" \
+          license-header-check

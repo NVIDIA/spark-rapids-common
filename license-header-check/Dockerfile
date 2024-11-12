@@ -18,5 +18,5 @@ WORKDIR /
 COPY license-header-check .
 RUN pip install PyGithub && chmod +x /license-header-check
 
-# require envs: OWNER,REPO_NAME,HEAD,BASE,GITHUB_TOKEN
+# require envs: OWNER,REPO_NAME,PULL_NUMBER,GITHUB_TOKEN
 ENTRYPOINT ["/license-header-check"]
