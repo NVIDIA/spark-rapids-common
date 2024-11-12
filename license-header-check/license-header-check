@@ -61,6 +61,7 @@ def checkLicenseHeader(files, license_pattern):
             for pattern in license_pattern:
                 if pattern not in content:
                     no_license_files.append(file)
+                    break
     return no_license_files
 
 def main(owner, repo_name, pull_number, token, excludes, license_pattern):
