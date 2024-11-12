@@ -54,7 +54,7 @@ def checkLicenseHeader(files, license_pattern):
                     no_license_files.append(file)
     return no_license_files
 
-def main(repo_name, pull_number, token, excludes, license_pattern):
+def main(owner, repo_name, pull_number, token, excludes, license_pattern):
     try:
         files = getDiffFiles(repo_name, pull_number, token)
         files, excluded_files = filterFiles(files, excludes)
