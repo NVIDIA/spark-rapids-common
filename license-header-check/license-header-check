@@ -32,7 +32,9 @@ LICENSE_PATTERN = ["NVIDIA CORPORATION", "Licensed under the Apache License"]
 def getDiffFiles(owner, repo_name, pull_number, token):
     gh = Github(token)
     pr = gh.get_repo(f'{owner}/{repo_name}').get_pull(pull_number)
-    return pr.get_files()
+    changed_files = pr.get_files()
+    files = [file.filename for file in changed_files]
+    return files
 
 def filterFiles(files, excludes):
     excluded_files = []
