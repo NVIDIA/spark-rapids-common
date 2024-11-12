@@ -38,7 +38,7 @@ def getDiffFiles(owner, repo_name, pull_number, token):
     files = [file.filename for file in changed_files]
     # checkout source code
     head_ref = pr.head.ref
-    subprocess.run(f"git clone {repo.clone_url} /code && cd /code/{repo_name} && git checkout {head_ref}", shell=True, check=True)
+    subprocess.run(f"git clone {repo.clone_url} /code && cd /code && git checkout {head_ref}", shell=True, check=True)
 
     return files
 
