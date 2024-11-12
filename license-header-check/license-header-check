@@ -62,7 +62,7 @@ def main(owner, repo_name, pull_number, token, excludes, license_pattern):
         files = getDiffFiles(owner, repo_name, pull_number, token)
         files, excluded_files = filterFiles(files, excludes)
 
-        files_and_directories = os.listdir(os.getcwd())
+        files_and_directories = os.listdir('/code')
         for item in files_and_directories:
             print(item)
 
