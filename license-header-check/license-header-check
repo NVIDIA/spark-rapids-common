@@ -39,6 +39,7 @@ def getDiffFiles(owner, repo_name, pull_number, token):
 def filterFiles(files, excludes):
     excluded_files = []
     for file in files:
+        print("Filtering file: {}".format(file))
         for pattern in excludes:
             if fnmatch.fnmatch(file, pattern):
                 excluded_files.append(file)
