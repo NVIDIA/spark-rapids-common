@@ -27,7 +27,6 @@ from argparse import ArgumentParser
 from github import Github
 
 # Default configs
-EXCLUDES = ['NOTICE', '*.md']
 LICENSE_PATTERN = ["NVIDIA CORPORATION", "Licensed under the Apache License"]
 
 def getDiffFiles(owner, repo_name, pull_number, token):
@@ -43,6 +42,7 @@ def getDiffFiles(owner, repo_name, pull_number, token):
     return files
 
 def filterFiles(files, excludes):
+    excludes = excludes.split('\n')
     excluded_files = []
     for file in files:
         print("Filtering file: {}".format(file))
@@ -88,8 +88,7 @@ if __name__ == '__main__':
     parser.add_argument("--repo_name", help="repo name", default='')
     parser.add_argument("--pull_number", help="pull request number", type=int)
     parser.add_argument("--token", help="github token, will use GITHUB_TOKEN if empty", default='')
-    parser.add_argument("--excludes", help="excluded files", default=EXCLUDES)
-    parser.add_argument("--license_pattern", help="license/copyright pattern", default=LICENSE_PATTERN)
+    parser.add_argument("--excludes", help="excluded files", default='')
     args = parser.parse_args()
 
     OWNER = args.owner if args.owner else os.environ.get('OWNER')
@@ -100,9 +99,7 @@ if __name__ == '__main__':
     assert PULL_NUMBER, 'env PULL_NUMBER should not be empty'
     GITHUB_TOKEN = args.token if args.token else os.environ.get('GITHUB_TOKEN')
     assert GITHUB_TOKEN, 'env GITHUB_TOKEN should not be empty'
-    EXCLUDES = args.excludes if args.excludes else EXCLUDES
+    EXCLUDES = args.excludes if args.excludes else os.environ.get('EXCLUDES')
     assert EXCLUDES, 'EXCLUDES should not be empty'
-    LICENSE_PATTERN = args.license_pattern if args.license_pattern else LICENSE_PATTERN
-    assert LICENSE_PATTERN, 'LICENSE_PATTERN should not be empty'
 
     main(owner=OWNER, repo_name=REPO_NAME, pull_number=PULL_NUMBER, token=GITHUB_TOKEN, excludes=EXCLUDES, license_pattern=LICENSE_PATTERN)

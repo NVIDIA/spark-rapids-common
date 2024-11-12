@@ -31,6 +31,10 @@ inputs:
     description: "GitHub token"
     required: true
     type: string
+  excludes:
+    description: "exclude file pattern"
+    required: true
+    type: string
 
 runs:
   using: "composite"
@@ -51,4 +55,5 @@ runs:
           -e REPO_NAME="${{ inputs.repo }}" \
           -e GITHUB_TOKEN="${{ inputs.token }}" \
           -e PULL_NUMBER="${{ inputs.pull_number }}" \
+          -e EXCLUDES="${{ inputs.excludes }}" \
           license-header-check
