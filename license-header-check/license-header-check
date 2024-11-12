@@ -67,12 +67,6 @@ def main(owner, repo_name, pull_number, token, excludes, license_pattern):
     try:
         files = getDiffFiles(owner, repo_name, pull_number, token)
         files, excluded_files = filterFiles(files, excludes)
-
-        files_and_directories = os.listdir('/code')
-        for item in files_and_directories:
-            print(item)
-
-
         no_license_files = checkLicenseHeader(files, license_pattern)
         warning_message = ""
         for file in excluded_files:
