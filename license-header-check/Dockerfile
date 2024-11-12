@@ -16,6 +16,7 @@ FROM python:alpine
 
 WORKDIR /
 COPY license-header-check .
+RUN apt update -y && apt install -y git
 RUN pip install PyGithub && chmod +x /license-header-check
 
 # require envs: OWNER,REPO_NAME,PULL_NUMBER,GITHUB_TOKEN
