@@ -39,15 +39,18 @@ runs:
         FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
         FILES=$(echo "$FILES" | grep -E "$PATTERNS")
 
-        NO_LICENSE_FILES=()
+        NO_LICENSE_FILES=""
         for FILE in $FILES; do
             echo "Checking $FILE"
             if !(grep -E "$LICENSE_PATTERN" "$FILE"); then
-                NO_LICENSE_FILES+=($FILE)
+                NO_LICENSE_FILES+="$FILE "
             fi
         done
 
-        if [ ! -z "${NO_LICENSE_FILES[@]}" ]; then
-            echo "Following files missed copyright/license header: ${NO_LICENSE_FILES[*]}"
+        if [ ! -z "$NO_LICENSE_FILES" ]; then
+            echo "Following files missed copyright/license header: "
+            for FILE in $NO_LICENSE_FILES; do
+                echo "$FILE"
+            done
             exit 1
         fi
