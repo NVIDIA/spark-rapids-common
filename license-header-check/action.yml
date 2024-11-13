@@ -15,23 +15,7 @@
 name: 'license-header-check action'
 description: 'check license/copyright header'
 inputs:
-  owner:
-    description: "Repository Owner"
-    required: true
-    type: string
-  repo:
-    description: "Repository name"
-    required: true
-    type: string
-  pull_number:
-    description: "Pull request number"
-    required: true
-    type: string
-  token:
-    description: "GitHub token"
-    required: true
-    type: string
-  excludes:
+  exclude_patterns:
     description: "exclude file pattern"
     required: true
     type: string
@@ -39,21 +23,20 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        repository: YanxuanLiu/spark-rapids-common
-        ref: license-header-check
-
-    - name: Run License header check in Docker
+    - name: Get changed files
       shell: bash
       run: |
-        pushd ./license-header-check
-        docker build -t license-header-check -f Dockerfile .
-        docker run --rm \
-          -e OWNER="${{ inputs.owner }}" \
-          -e REPO_NAME="${{ inputs.repo }}" \
-          -e GITHUB_TOKEN="${{ inputs.token }}" \
-          -e PULL_NUMBER="${{ inputs.pull_number }}" \
-          -e EXCLUDES="${{ inputs.excludes }}" \
-          license-header-check
+        ls -la
+        CURRENT_YEAR=$(date +%Y)
+        LICENSE_PATTERN="Copyright \(c\) .*?${CURRENT_YEAR}, NVIDIA CORPORATION."
+        FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+        IFS="\n" read -r -a EXCLUDE_PATTERNS <<< ${{ inputs.exclude_patterns }}
+
+        for FILE in $FILES; do
+          if echo "$FILE" | grep -E "$EXCLUDE_PATTERNS"; then
+            continue
+          fi
+          if [[ grep -E $LICENSE_PATTERN $FILE ]]; then
+            echo "Missing or incorrect license header in $FILE"
+          fi
+        done
