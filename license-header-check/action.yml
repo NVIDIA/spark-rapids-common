@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: 'license-header-check action'
+name: 'License Header Check'
 description: 'check license/copyright header'
 inputs:
-  exclude_patterns:
-    description: "exclude file pattern"
+  included_file_patterns:
+    description: "included file pattern"
     required: true
     type: string
 
@@ -26,17 +26,28 @@ runs:
     - name: Get changed files
       shell: bash
       run: |
-        ls -la
         CURRENT_YEAR=$(date +%Y)
         LICENSE_PATTERN="Copyright \(c\) .*?${CURRENT_YEAR}, NVIDIA CORPORATION."
-        FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
-        IFS="\n" read -r -a EXCLUDE_PATTERNS <<< ${{ inputs.exclude_patterns }}
-
-        for FILE in $FILES; do
-          if echo "$FILE" | grep -E "$EXCLUDE_PATTERNS"; then
-            continue
-          fi
-          if [[ grep -E $LICENSE_PATTERN $FILE ]]; then
-            echo "Missing or incorrect license header in $FILE"
-          fi
+        
+        IFS="," read -r -a FILE_PATTERN_ARRAY <<< ${{ inputs.included_file_patterns }}
+        PATTERNS=""
+        for PATTERN in "${FILE_PATTERN_ARRAY[@]}"; do
+            PATTERNS+="$(echo "$PATTERN" | xargs -I{} echo "{}")|"
         done
+        PATTERNS=${PATTERNS%|}
+
+        FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+        FILES=$(echo "$FILES" | grep -E "$PATTERNS")
+
+        NO_LICENSE_FILES=()
+        for FILE in $FILES; do
+            echo "Checking $FILE"
+            if !(grep -E "$LICENSE_PATTERN" "$FILE"); then
+                NO_LICENSE_FILES+=($FILE)
+            fi
+        done
+
+        if [ ! -z "${NO_LICENSE_FILES[@]}" ]; then
+            echo "Following files missed copyright/license header: ${NO_LICENSE_FILES[*]}"
+            exit 1
+        fi
