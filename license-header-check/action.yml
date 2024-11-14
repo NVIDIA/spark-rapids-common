@@ -38,7 +38,7 @@ runs:
 
         # Check license header
         NO_LICENSE_FILES=""
-        for FILE in "${FILES[@]}"; do
+        for FILE in $FILES; do
             for PATTERN in "${PATTERNS[@]}"; do
                 if [[ $(basename $FILE) == $PATTERN ]]; then
                     echo "Checking $FILE"
