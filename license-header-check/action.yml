@@ -42,7 +42,7 @@ runs:
             for PATTERN in "${PATTERNS[@]}"; do
                 if [[ $(basename $FILE) == $PATTERN ]]; then
                     echo "Checking $FILE"
-                    if !(grep -E "$LICENSE_PATTERN" "$FILE"); then
+                    if !(grep -Eq "$LICENSE_PATTERN" "$FILE"); then
                         NO_LICENSE_FILES+="$FILE "
                     fi
                     break
