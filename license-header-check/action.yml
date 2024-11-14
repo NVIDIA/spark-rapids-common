@@ -34,7 +34,7 @@ runs:
         IFS="," read -r -a PATTERNS <<< "$(echo "${{ inputs.included_file_patterns }}" | tr -d ' ')"
 
         # Get changed files
-        FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+        FILES=$(git diff --name-only --diff-filter=AM ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
 
         # Check license header
         NO_LICENSE_FILES=""
