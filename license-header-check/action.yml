@@ -42,7 +42,7 @@ runs:
         # Check license header
         NO_LICENSE_FILES=""
         for FILE in $FILES; do
-            echo "Filter file: $FILE"
+            echo "Detected changed file: $FILE"
             for PATTERN in $PATTERNS; do
                 if find "$(dirname $FILE)" -type f -name "$PATTERN" | grep -wq "$FILE"; then
                     echo "Checking $FILE"
@@ -55,10 +55,14 @@ runs:
         done
 
         # Output result
+        echo "--------- RESULT ---------"
         if [ ! -z "$NO_LICENSE_FILES" ]; then
             echo "Following files missed copyright/license header or expired: "
             for FILE in $NO_LICENSE_FILES; do
                 echo "$FILE"
             done
             exit 1
+        else
+            echo "All files passed the check"
+            exit 0
         fi
