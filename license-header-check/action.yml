@@ -33,9 +33,8 @@ runs:
         IFS="," read -r -a FILE_PATTERN_ARRAY <<< ${{ inputs.included_file_patterns }}
         PATTERNS=""
         for PATTERN in "${FILE_PATTERN_ARRAY[@]}"; do
-            PATTERNS+="$(echo "$PATTERN" | xargs -I{} echo "{}")|"
+            PATTERNS+="$(echo "$PATTERN" | xargs -I{} echo "{}") "
         done
-        PATTERNS=${PATTERNS%|}
 
         # Get changed files
         FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
@@ -45,7 +44,7 @@ runs:
         for FILE in $FILES; do
             echo "Filter file: $FILE"
             for PATTERN in $PATTERNS; do
-                if find "./$(dirname $FILE)" -type f -name "$PATTERN" | grep -wq "$FILE"; then
+                if find "$(dirname $FILE)" -type f -name "$PATTERN" | grep -wq "$FILE"; then
                     echo "Checking $FILE"
                     if !(grep -E "$LICENSE_PATTERN" "$FILE"); then
                         NO_LICENSE_FILES+="$FILE "
