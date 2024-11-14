@@ -45,7 +45,7 @@ runs:
         for FILE in $FILES; do
             echo "Filter file: $FILE"
             for PATTERN in $PATTERNS; do
-                if find "$(dirname $FILE)" -type f -name "$PATTERN" | grep -wq "$FILE"; then
+                if find "./$(dirname $FILE)" -type f -name "$PATTERN" | grep -wq "$FILE"; then
                     echo "Checking $FILE"
                     if !(grep -E "$LICENSE_PATTERN" "$FILE"); then
                         NO_LICENSE_FILES+="$FILE "
