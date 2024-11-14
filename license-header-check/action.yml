@@ -43,6 +43,7 @@ runs:
         # Check license header
         NO_LICENSE_FILES=""
         for FILE in $FILES; do
+            echo "Filter file: $FILE"
             for PATTERN in $PATTERNS; do
                 if find "$(dirname $FILE)" -type f -name "$PATTERN" | grep -wq "$FILE"; then
                     echo "Checking $FILE"
