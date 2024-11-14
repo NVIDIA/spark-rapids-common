@@ -26,25 +26,21 @@ runs:
     - name: Get changed files
       shell: bash
       run: |
+        # Get license pattern with year
         CURRENT_YEAR=$(date +%Y)
         LICENSE_PATTERN="Copyright \(c\) .*?${CURRENT_YEAR}, NVIDIA CORPORATION."
         
         # Format file patterns
-        IFS="," read -r -a FILE_PATTERN_ARRAY <<< ${{ inputs.included_file_patterns }}
-        PATTERNS=""
-        for PATTERN in "${FILE_PATTERN_ARRAY[@]}"; do
-            PATTERNS+="$(echo "$PATTERN" | xargs -I{} echo "{}") "
-        done
+        IFS="," read -r -a PATTERNS <<< "$(echo "$file_patterns" | tr -d ' ')"
 
         # Get changed files
         FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
 
         # Check license header
         NO_LICENSE_FILES=""
-        for FILE in $FILES; do
-            echo "Detected changed file: $FILE"
-            for PATTERN in $PATTERNS; do
-                if find "$(dirname $FILE)" -type f -name "$PATTERN" | grep -wq "$FILE"; then
+        for FILE in "${FILES[@]}"; do
+            for PATTERN in "${PATTERNS[@]}"; do
+                if [[ $(basename $FILE) == $PATTERN ]]; then
                     echo "Checking $FILE"
                     if !(grep -E "$LICENSE_PATTERN" "$FILE"); then
                         NO_LICENSE_FILES+="$FILE "
@@ -58,9 +54,7 @@ runs:
         echo "--------- RESULT ---------"
         if [ ! -z "$NO_LICENSE_FILES" ]; then
             echo "Following files missed copyright/license header or expired: "
-            for FILE in $NO_LICENSE_FILES; do
-                echo "$FILE"
-            done
+            echo $NO_LICENSE_FILES | tr ' ' '\n'
             exit 1
         else
             echo "All files passed the check"
