@@ -31,7 +31,7 @@ runs:
         LICENSE_PATTERN="Copyright \(c\) .*?${CURRENT_YEAR}, NVIDIA CORPORATION."
         
         # Format file patterns
-        IFS="," read -r -a PATTERNS <<< "$(echo "${{ inputs.included_file_patterns }}" | tr -d ' ')"
+        IFS="," read -r -a PATTERNS <<< "$(echo "${{ inputs.included_file_patterns }}" | tr -d ' ' | tr -d '\n')"
 
         # Get changed files
         FILES=$(git diff --name-only --diff-filter=AM ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
