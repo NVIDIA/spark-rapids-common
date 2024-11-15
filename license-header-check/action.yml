@@ -35,10 +35,12 @@ runs:
 
         # Get changed files
         FILES=$(git diff --name-only --diff-filter=AM ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+        RENAME_FILES=$(git diff --name-status ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "^R" | grep -v "R100" | awk '{print $3}')
+        FILES=($FILES $RENAME_FILES)
 
         # Check license header
         NO_LICENSE_FILES=""
-        for FILE in $FILES; do
+        for FILE in "${FILES[@]}"; do
             for PATTERN in "${PATTERNS[@]}"; do
                 if [[ $(basename $FILE) == $PATTERN ]]; then
                     echo "Checking $FILE"
