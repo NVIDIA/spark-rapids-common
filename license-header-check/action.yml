@@ -19,7 +19,7 @@ inputs:
     description: "included file pattern"
     required: true
     type: string
-  exclude_file_patterns:
+  excluded_file_patterns:
     description: "excluded file pattern"
     required: true
     type: string
