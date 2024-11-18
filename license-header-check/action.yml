@@ -19,6 +19,10 @@ inputs:
     description: "included file pattern"
     required: true
     type: string
+  exclude_file_patterns:
+    description: "excluded file pattern"
+    required: true
+    type: string
 
 runs:
   using: "composite"
@@ -31,7 +35,8 @@ runs:
         LICENSE_PATTERN="Copyright \(c\) .*?${CURRENT_YEAR}, NVIDIA CORPORATION."
         
         # Format file patterns
-        IFS="," read -r -a PATTERNS <<< "$(echo "${{ inputs.included_file_patterns }}" | tr -d ' ' | tr -d '\n')"
+        IFS="," read -r -a INCLUDE_PATTERNS <<< "$(echo "${{ inputs.included_file_patterns }}" | tr -d ' ' | tr -d '\n')"
+        IFS="," read -r -a EXCLUDE_PATTERNS <<< "$(echo "${{ inputs.excluded_file_patterns }}" | tr -d ' ' | tr -d '\n')"
 
         # Get changed files
         FILES=$(git diff --name-only --diff-filter=AM ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
@@ -41,24 +46,35 @@ runs:
         # Check license header
         NO_LICENSE_FILES=""
         for FILE in "${FILES[@]}"; do
-            for PATTERN in "${PATTERNS[@]}"; do
-                if [[ $(basename $FILE) == $PATTERN ]]; then
-                    echo "Checking $FILE"
-                    if !(grep -Eq "$LICENSE_PATTERN" "$FILE"); then
-                        NO_LICENSE_FILES+="$FILE "
-                    fi
-                    break
-                fi
-            done
+          INCLUDE=false
+          for INCLUDE_PATTERN in "${INCLUDE_PATTERNS[@]}"; do
+            if [[ $FILE == $INCLUDE_PATTERN ]]; then
+              INCLUDE=true
+              break
+            fi
+          done
+          EXCLUDE=false
+          for EXCLUDE_PATTERN in "${EXCLUDE_PATTERNS[@]}"; do
+            if [[ $FILE == $EXCLUDE_PATTERN ]]; then
+              EXCLUDE=true
+              break
+            fi
+          done
+          if [[ $INCLUDE == true && $EXCLUDE == false ]]; then
+            echo "Checking $FILE"
+            if !(grep -Eq "$LICENSE_PATTERN" "$FILE"); then
+              NO_LICENSE_FILES+="$FILE "
+            fi
+          fi
         done
 
         # Output result
         echo "--------- RESULT ---------"
         if [ ! -z "$NO_LICENSE_FILES" ]; then
-            echo "Following files missed copyright/license header or expired: "
-            echo $NO_LICENSE_FILES | tr ' ' '\n'
-            exit 1
+          echo "Following files missed copyright/license header or expired: "
+          echo $NO_LICENSE_FILES | tr ' ' '\n'
+          exit 1
         else
-            echo "All files passed the check"
-            exit 0
+          echo "All files passed the check"
+          exit 0
         fi
