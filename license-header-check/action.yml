@@ -37,11 +37,14 @@ runs:
         # Format file patterns
         IFS="," read -r -a INCLUDE_PATTERNS <<< "$(echo "${{ inputs.included_file_patterns }}" | tr -d ' ' | tr -d '\n')"
         IFS="," read -r -a EXCLUDE_PATTERNS <<< "$(echo "${{ inputs.excluded_file_patterns }}" | tr -d ' ' | tr -d '\n')"
+        echo "Included file patterns: ${INCLUDE_PATTERNS[@]}"
+        echo "Excluded file patterns: ${EXCLUDE_PATTERNS[@]}"
 
         # Get changed files
         FILES=$(git diff --name-only --diff-filter=AM ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
         RENAME_FILES=$(git diff --name-status ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "^R" | grep -v "R100" | awk '{print $3}')
         FILES=($FILES $RENAME_FILES)
+        echo "Files to be detected: ${FILES[@]}"
 
         # Check license header
         NO_LICENSE_FILES=""
