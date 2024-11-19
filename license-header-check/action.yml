@@ -21,7 +21,7 @@ inputs:
     type: string
   excluded_file_patterns:
     description: "excluded file pattern"
-    required: true
+    required: false
     type: string
 
 runs:
