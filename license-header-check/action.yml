@@ -30,6 +30,8 @@ runs:
     - name: Get changed files
       shell: bash
       run: |
+        set -ex
+
         # Get license pattern with year
         CURRENT_YEAR=$(date +%Y)
         LICENSE_PATTERN="Copyright \(c\) .*?${CURRENT_YEAR}, NVIDIA CORPORATION."
@@ -37,11 +39,15 @@ runs:
         # Format file patterns
         IFS="," read -r -a INCLUDE_PATTERNS <<< "$(echo "${{ inputs.included_file_patterns }}" | tr -d ' ' | tr -d '\n')"
         IFS="," read -r -a EXCLUDE_PATTERNS <<< "$(echo "${{ inputs.excluded_file_patterns }}" | tr -d ' ' | tr -d '\n')"
+        echo "Included file patterns: ${INCLUDE_PATTERNS[@]}"
+        echo "Excluded file patterns: ${EXCLUDE_PATTERNS[@]}"
 
         # Get changed files
         FILES=$(git diff --name-only --diff-filter=AM ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
-        RENAME_FILES=$(git diff --name-status ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "^R" | grep -v "R100" | awk '{print $3}')
+        RENAME_FILES=$(git diff --name-status ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "^R" | grep -v "R100" | awk '{print $3}' || echo "")
+        echo "${RENAME_FILES[@]}"
         FILES=($FILES $RENAME_FILES)
+        echo "Files to be detected: ${FILES[@]}"
 
         # Check license header
         NO_LICENSE_FILES=""
