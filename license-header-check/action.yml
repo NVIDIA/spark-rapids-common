@@ -30,7 +30,7 @@ runs:
     - name: Get changed files
       shell: bash
       run: |
-        set -ex
+        set -e
 
         # Get license pattern with year
         CURRENT_YEAR=$(date +%Y)
@@ -43,7 +43,7 @@ runs:
         echo "Excluded file patterns: ${EXCLUDE_PATTERNS[@]}"
 
         # Get changed files
-        FILES=$(git diff --name-only --diff-filter=AM ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+        FILES=$(git diff --name-only --diff-filter=AM ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}) || echo "Your base commit ID is too old, please try upmerge first."
         RENAME_FILES=$(git diff --name-status ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "^R" | grep -v "R100" | awk '{print $3}' || echo "")
         echo "${RENAME_FILES[@]}"
         FILES=($FILES $RENAME_FILES)
@@ -77,8 +77,9 @@ runs:
         # Output result
         echo "--------- RESULT ---------"
         if [ ! -z "$NO_LICENSE_FILES" ]; then
-          echo "Following files missed copyright/license header or expired: "
+          echo "Following files missed copyright/license header or expired:"
           echo $NO_LICENSE_FILES | tr ' ' '\n'
+          echo "If there are files that are not modified by your PR, please try upmerge first."
           exit 1
         else
           echo "All files passed the check"
