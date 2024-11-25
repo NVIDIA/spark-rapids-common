@@ -37,14 +37,7 @@ jobs:
         uses: NVIDIA/spark-rapids-common/license-header-check@main
         with:
           included_file_patterns: |
-            *.py
-            *.java,
-            *.sh,
-            *Dockerfile*,
-            *Jenkinsfile*,
             *.yml,
-            *.yaml,
-            *.txt,
-            *.xml,
-            auto-merge/*,
-            signoff-check/*
+            *Dockerfile*,
+            auto-merge/automerge,
+            signoff-check/signoff-check
