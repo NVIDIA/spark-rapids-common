@@ -68,7 +68,7 @@ runs:
           done
           if [[ $INCLUDE == true && $EXCLUDE == false ]]; then
             echo "Checking $FILE"
-            if !(grep -Eq "$LICENSE_PATTERN" "$FILE"); then
+            if !(grep -Eiq "$LICENSE_PATTERN" "$FILE"); then
               NO_LICENSE_FILES+="$FILE "
             fi
           fi
