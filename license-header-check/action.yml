@@ -34,7 +34,7 @@ runs:
 
         # Get license pattern with year
         CURRENT_YEAR=$(date +%Y)
-        LICENSE_PATTERN="Copyright \(c\) .*?${CURRENT_YEAR}, NVIDIA CORPORATION."
+        LICENSE_PATTERN="Copyright \(c\) .*?${CURRENT_YEAR},? NVIDIA CORPORATION."
         
         # Format file patterns
         IFS="," read -r -a INCLUDE_PATTERNS <<< "$(echo "${{ inputs.included_file_patterns }}" | tr -d ' ' | tr -d '\n')"
