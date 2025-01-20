@@ -79,7 +79,8 @@ runs:
         if [ ! -z "$NO_LICENSE_FILES" ]; then
           echo "Following files missed copyright/license header or expired:"
           echo $NO_LICENSE_FILES | tr ' ' '\n'
-          echo "If there are files that are not modified by your PR, please try upmerge first."
+          echo "--------- NOTICE ---------"
+          echo "If there are files are not modified in this PR, please try UPMERGE first."
           exit 1
         else
           echo "All files passed the check"
