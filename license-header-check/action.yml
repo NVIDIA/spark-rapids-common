@@ -76,11 +76,16 @@ runs:
 
         # Output result
         echo "--------- RESULT ---------"
+        ERROR_MESSAGE="If the feature branch is not based on the latest target branch, \
+        git diff may include unexpected files marked as modified in the check that are not from the feature branch. \
+        This is because it tries to find a common commit between the two branches \
+        and can get confused if it is too old and there are lots of changes. \
+        If this happens please UPMERGE your PR to the latest development branch."
         if [ ! -z "$NO_LICENSE_FILES" ]; then
           echo "Following files missed copyright/license header or expired:"
           echo $NO_LICENSE_FILES | tr ' ' '\n'
           echo "--------- NOTICE ---------"
-          echo "If there are files are not modified in this PR, please try UPMERGE first."
+          echo "${ERROR_MESSAGE}"
           exit 1
         else
           echo "All files passed the check"
