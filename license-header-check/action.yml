@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.
+# Copyright (c) 2024-2025, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -43,8 +43,10 @@ runs:
         echo "Excluded file patterns: ${EXCLUDE_PATTERNS[@]}"
 
         # Get changed files
-        FILES=$(git diff --name-only --diff-filter=AM ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}) || (echo "Your base commit ID is too old, please try upmerge first." && exit 1)
-        RENAME_FILES=$(git diff --name-status ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep "^R" | grep -v "R100" | awk '{print $3}' || echo "")
+        BASE_REF=$(git --no-pager log --oneline -1 | awk '{ print $NF }')
+        echo "Base REF: ${BASE_REF}"
+        FILES=$(git diff --name-only --diff-filter=AM ${BASE_REF} HEAD) || (echo "Your base commit ID is too old, please try upmerge first." && exit 1)
+        RENAME_FILES=$(git diff --name-status ${BASE_REF} HEAD | grep "^R" | grep -v "R100" | awk '{print $3}' || echo "")
         echo "${RENAME_FILES[@]}"
         FILES=($FILES $RENAME_FILES)
         echo "Files to be detected: ${FILES[@]}"
@@ -76,10 +78,16 @@ runs:
 
         # Output result
         echo "--------- RESULT ---------"
+        ERROR_MESSAGE="If the feature branch is not based on the latest target branch, \
+        git diff may include unexpected files marked as modified in the check that are not from the feature branch. \
+        This is because it tries to find a common commit between the two branches \
+        and can get confused if it is too old and there are lots of changes. \
+        If this happens please UPMERGE your PR to the latest development branch."
         if [ ! -z "$NO_LICENSE_FILES" ]; then
           echo "Following files missed copyright/license header or expired:"
           echo $NO_LICENSE_FILES | tr ' ' '\n'
-          echo "If there are files that are not modified by your PR, please try upmerge first."
+          echo "--------- NOTICE ---------"
+          echo "${ERROR_MESSAGE}"
           exit 1
         else
           echo "All files passed the check"
