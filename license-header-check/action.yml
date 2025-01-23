@@ -43,8 +43,9 @@ runs:
         echo "Excluded file patterns: ${EXCLUDE_PATTERNS[@]}"
 
         # Get changed files
-        FILES=$(git diff --name-only --diff-filter=AM ${{ github.event.pull_request.base.sha }} HEAD) || (echo "Your base commit ID is too old, please try upmerge first." && exit 1)
-        RENAME_FILES=$(git diff --name-status ${{ github.event.pull_request.base.sha }} HEAD | grep "^R" | grep -v "R100" | awk '{print $3}' || echo "")
+        BASE_REF=$(git --no-pager log --oneline -1 | awk '{ print $NF }')
+        FILES=$(git diff --name-only --diff-filter=AM ${BASE_REF} HEAD) || (echo "Your base commit ID is too old, please try upmerge first." && exit 1)
+        RENAME_FILES=$(git diff --name-status ${BASE_REF} HEAD | grep "^R" | grep -v "R100" | awk '{print $3}' || echo "")
         echo "${RENAME_FILES[@]}"
         FILES=($FILES $RENAME_FILES)
         echo "Files to be detected: ${FILES[@]}"
