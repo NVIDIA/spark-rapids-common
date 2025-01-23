@@ -44,6 +44,7 @@ runs:
 
         # Get changed files
         BASE_REF=$(git --no-pager log --oneline -1 | awk '{ print $NF }')
+        echo "Base REF: ${BASE_REF}"
         FILES=$(git diff --name-only --diff-filter=AM ${BASE_REF} HEAD) || (echo "Your base commit ID is too old, please try upmerge first." && exit 1)
         RENAME_FILES=$(git diff --name-status ${BASE_REF} HEAD | grep "^R" | grep -v "R100" | awk '{print $3}' || echo "")
         echo "${RENAME_FILES[@]}"
