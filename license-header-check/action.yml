@@ -40,7 +40,7 @@ runs:
         PR_TITLE="${{ github.event.pull_request.title }}"
         PR_TITLE_REGEX="^Merge branch-[0-9]+.[0-9]+ into main"
         if [[ $PR_TITLE =~ $PR_TITLE_REGEX ]]; then
-          echo "Skip this check for merge to main."
+          echo "Skip this check for Merge to main PR."
           exit 0
         fi
         
