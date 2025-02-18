@@ -37,8 +37,9 @@ runs:
         LICENSE_PATTERN="Copyright \(c\) .*?${CURRENT_YEAR},? NVIDIA CORPORATION."
 
         # Skip for merge to main
-        echo "${{ github.event.pull_request.title }}"
-        if [[ "${{ github.event.pull_request.title }}" =~ ^Merge branch-[0-9]+.[0-9]+ into main ]]; then
+        PR_TITLE="${{ github.event.pull_request.title }}"
+        PR_TITLE_REGEX="^Merge branch-[0-9]+.[0-9]+ into main"
+        if [[ $PR_TITLE =~ $PR_TITLE_REGEX ]]; then
           echo "Skip this check for merge to main."
           exit 0
         fi
