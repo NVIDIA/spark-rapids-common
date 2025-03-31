@@ -29,16 +29,11 @@ from github import Github
 
 SIGNOFF_REGEX = re.compile('Signed-off-by:')
 
-# ada 
+#TODO: make it more reliable
 def signoff(token: str, owner: str, repo_name: str, pull_number: int):
-
     gh = Github(token, per_page=100, user_agent='signoff-check', verify=True)
     pr = gh.get_repo(f"{owner}/{repo_name}").get_pull(pull_number)
     for c in pr.get_commits():
-    
-
-
-
         if SIGNOFF_REGEX.search(c.commit.message):
             print('Found signoff.\n')
             print(f"Commit sha:\n{c.commit.sha}")
