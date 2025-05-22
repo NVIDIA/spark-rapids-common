@@ -29,20 +29,20 @@ runs:
           const description = hasComment
             ? 'PR description contains comment in "<!--". Please remove the comment manually.'
             : 'PR description is valid.';
-            
+
           if (hasComment) {
             core.setFailed(description);
           }
 
-          await github.rest.repos.createCommitStatus({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            sha: sha,
-            state: state,
-            target_url: pr.html_url,
-            description: description.substring(0, 140),
-            context: 'pr-description-check'
-          });
+          # await github.rest.repos.createCommitStatus({
+          #   owner: context.repo.owner,
+          #   repo: context.repo.repo,
+          #   sha: sha,
+          #   state: state,
+          #   target_url: pr.html_url,
+          #   description: description.substring(0, 140),
+          #   context: 'pr-description-check'
+          # });
 
           # const owner = context.repo.owner;
           # const repo = context.repo.repo;
