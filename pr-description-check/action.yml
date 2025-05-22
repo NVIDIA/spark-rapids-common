@@ -21,38 +21,40 @@ runs:
     - name: Get PR description
       id: pr_description
       uses: actions/github-script@v7
+      env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         script: |
+          const owner = context.repo.owner;
+          const repo = context.repo.repo;
+          const sha = context.payload.pull_request?.head?.sha;
+          const targetUrl = context.payload.pull_request?.html_url;
+
           const prBody = context.payload.pull_request?.body || '';
           const checkError = prBody.includes('<!--');
 
+          const octokit = new Octokit({
+            auth: process.env.GITHUB_TOKEN
+          });
+
           if (checkError) {
-            const github = require('@actions/github');
-            await github.rest.checks.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: 'PR Description Check',
-              head_sha: context.payload.pull_request.head.sha,
-              status ':completed',
-              conclusion: 'failure',
-              output: {
-                title: 'PR Description Check',
-                summary: 'Error: PR description contains comment in "<!--". Please remove the comment manually.',
-                text: 'The PR description should not contain HTML comments.'
-              }
-            });
+            core.setFailed('PR description contains comment in "<!--". Please remove the comment manually.');
+            const state = 'failure';
+            const description = 'PR description contains comment in "<!--". Please remove the comment manually.';
           } else {
-            const github = require('@actions/github');
-            await github.rest.checks.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: 'PR Description Check',
-              head_sha: context.payload.pull_request.head.sha,
-              status: 'completed',
-              conclusion: 'success',
-              output: {
-                title: 'PR Description Check',
-                summary: 'PR description is valid.'
-              }
-            });
+            const state = 'success';
+            const description = 'PR description is valid.';
           }
+
+          await octokit.request('POST /repos/{owner}/{repo}/statuses/{sha}', {
+            owner: owner,
+            repo: repo,
+            sha: sha,
+            state: state,
+            target_url: targetUrl,
+            description: description,
+            context: 'pr-description-check',
+            headers: {
+              'X-GitHub-Api-Version': '2022-11-28'
+            }
+          });
