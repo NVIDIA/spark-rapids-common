@@ -25,6 +25,6 @@ runs:
         script: |
           const prBody = context.payload.pull_request?.body || '';
           if (prBody.includes('<!--')) {
-            core.setFailed('Error: PR description contains comment in "<!--". Please remove the comment manually.');
+            throw new Error('PR description contains comment in "<!--". Please remove the comment manually.');
           }
           
