@@ -14,6 +14,10 @@
 
 name: 'PR Description Check'
 description: 'check if comment exists in PR description'
+inputs:
+  github-token:
+    description: 'GitHub token for authentication'
+    required: true
 
 runs:
   using: "composite"
@@ -31,7 +35,7 @@ runs:
           const prBody = context.payload.pull_request?.body || '';
           const checkError = prBody.includes('<!--');
 
-          const octokit = github.getOctokit(${{ secrets.GITHUB_TOKEN }});
+          const octokit = github.getOctokit(${{ inputs.github-token }});
 
           if (checkError) {
             core.setFailed('PR description contains comment in "<!--". Please remove the comment manually.');
