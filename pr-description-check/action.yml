@@ -23,7 +23,9 @@ runs:
       uses: actions/github-script@v7
       with:
         script: |
-          const prBody = context.payload.pull_request?.body || '';
+          const pr = context.payload.pull_request;
+          const prBody = pr.body || '';
+          const sha = pr.head.sha;
           const hasComment = prBody.includes('<!--');
           const state = hasComment ? 'failure' : 'success';
           const description = hasComment
@@ -33,4 +35,23 @@ runs:
           if (hasComment) {
             core.setFailed(description);
           }
-            
+
+          console.log({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            sha,
+            state,
+            target_url: pr.html_url,
+            description: description.substring(0, 140),
+            context: 'pr-description-check'
+          });
+
+          await github.rest.repos.createCommitStatus({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            sha: sha,
+            state: state,
+            target_url: pr.html_url,
+            description: description.substring(0, 140),
+            context: 'pr-description-check'
+          });
