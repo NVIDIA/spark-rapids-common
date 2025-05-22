@@ -22,7 +22,7 @@ runs:
       id: pr_description
       uses: actions/github-script@v7
       env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GIT_TOKEN }}
       with:
         script: |
           const owner = context.repo.owner;
