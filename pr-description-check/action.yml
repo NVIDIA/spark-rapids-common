@@ -24,7 +24,36 @@ runs:
       with:
         script: |
           const prBody = context.payload.pull_request?.body || '';
-          if (prBody.includes('<!--')) {
-            throw new Error('PR description contains comment in "<!--". Please remove the comment manually.');
+          const checkError = prBody.includes('<!--');
+
+          if (checkError) {
+            const github = require('@actions/github');
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'PR Description Check',
+              head_sha: context.payload.pull_request.head.sha,
+              status: 'completed',
+              conclusion: 'failure',
+              output: {
+                title: 'PR Description Check',
+                summary: 'Error: PR description contains comment in "<!--". Please remove the comment manually.',
+                text: 'The PR description should not contain HTML comments.',
+              }
+            });
+          } else {
+            const github = require('@actions/github');
+            await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'PR Description Check',
+              head_sha: context.payload.pull_request.head.sha,
+              status: 'completed',
+              conclusion: 'success',
+              output: {
+                title: 'PR Description Check',
+               : summary 'PR description is valid.'
+              }
+            });
           }
           
