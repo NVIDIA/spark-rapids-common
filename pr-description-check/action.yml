@@ -26,6 +26,7 @@ runs:
           return context.payload.pull_request?.body || '';
 
     - name: Check comment in PR description
+      shell: bash
       if: contains(steps.pr_description.outputs.result, '<!--')
       run: |
         echo "Error: PR description contains comment in '<!--'. Please remove the comment manually."
