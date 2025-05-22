@@ -33,12 +33,12 @@ runs:
               repo: context.repo.repo,
               name: 'PR Description Check',
               head_sha: context.payload.pull_request.head.sha,
-              status: 'completed',
+              status ':completed',
               conclusion: 'failure',
               output: {
                 title: 'PR Description Check',
                 summary: 'Error: PR description contains comment in "<!--". Please remove the comment manually.',
-                text: 'The PR description should not contain HTML comments.',
+                text: 'The PR description should not contain HTML comments.'
               }
             });
           } else {
@@ -52,8 +52,7 @@ runs:
               conclusion: 'success',
               output: {
                 title: 'PR Description Check',
-               : summary 'PR description is valid.'
+                summary: 'PR description is valid.'
               }
             });
           }
-          
