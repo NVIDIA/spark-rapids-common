@@ -32,7 +32,7 @@ runs:
           const checkError = prBody.includes('<!--');
 
           const octokit = new Octokit({
-              auth: ${{ secrets.GIT_TOKEN }}
+              auth: ${{ secrets.PROJECT_TOKEN }}
             });
 
           if (checkError) {
