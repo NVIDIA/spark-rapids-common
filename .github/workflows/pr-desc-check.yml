@@ -24,5 +24,5 @@ jobs:
     runs-on: ubuntu-latest
     if: "!contains(github.event.pull_request.title, '[bot]')"
     steps:
-      - name: pr-desciption-check
+      - name: pr-description-check
         uses: NVIDIA/spark-rapids-common/pr-description-check@main
