@@ -27,7 +27,7 @@ runs:
       uses: actions/github-script@v7
       with:
         script: |
-          const { Octokit } = require("@octokit/rest");
+          const github = require('@actions/github');
           const owner = context.repo.owner;
           const repo = context.repo.repo;
           const sha = context.payload.pull_request?.head?.sha;
@@ -36,9 +36,7 @@ runs:
           const prBody = context.payload.pull_request?.body || '';
           const checkError = prBody.includes('<!--');
 
-          const octokit = new Octokit({
-              auth: ${{ inputs.github-token }}
-            });
+          const octokit = github.getOctokit(${{ inputs.github-token }});
 
           if (checkError) {
             core.setFailed('PR description contains comment in "<!--". Please remove the comment manually.');
