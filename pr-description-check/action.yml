@@ -27,6 +27,7 @@ runs:
       uses: actions/github-script@v7
       with:
         script: |
+          const { Octokit } = require("@octokit/rest");
           const owner = context.repo.owner;
           const repo = context.repo.repo;
           const sha = context.payload.pull_request?.head?.sha;
