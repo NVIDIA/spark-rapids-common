@@ -14,6 +14,11 @@
 
 name: 'PR Description Check'
 description: 'check if comment exists in PR description'
+inputs:
+  github-token:
+    description: "github token"
+    required: true
+    type: string
 
 runs:
   using: "composite"
@@ -36,16 +41,6 @@ runs:
           if (hasComment) {
             core.setFailed(description);
           }
-
-          console.log({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            sha,
-            state,
-            target_url: pr.html_url,
-            description: description.substring(0, 140),
-            context: 'pr-description-check'
-          });
 
           await github.rest.repos.createCommitStatus({
             owner: context.repo.owner,

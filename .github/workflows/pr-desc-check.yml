@@ -22,7 +22,13 @@ on:
 jobs:
   pr-description-check:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      statuses: write
+      contents: read  
     if: "!contains(github.event.pull_request.title, '[bot]')"
     steps:
       - name: pr-description-check
         uses: NVIDIA/spark-rapids-common/pr-description-check@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
