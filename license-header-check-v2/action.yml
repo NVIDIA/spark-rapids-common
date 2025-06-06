@@ -12,8 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: 'License Header Check V2'
-description: 'check license/copyright header v2'
+# v2 is an update for new branch strategy (https://github.com/NVIDIA/spark-rapids-common/issues/37)
+# v2 will check all branches including main branch
+ 
+name: 'License Header Check'
+description: 'check license/copyright header'
 inputs:
   included_file_patterns:
     description: "included file pattern"
