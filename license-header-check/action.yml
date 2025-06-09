@@ -23,6 +23,11 @@ inputs:
     description: "excluded file pattern"
     required: false
     type: string
+  check_main:
+    description: "check main branch or not"
+    required: false
+    type: boolean
+    default: false
 
 runs:
   using: "composite"
@@ -37,9 +42,13 @@ runs:
         LICENSE_PATTERN="Copyright \(c\) .*?${CURRENT_YEAR},? NVIDIA CORPORATION."
 
         # Skip for merge to main PR
-        if [[ "${{ github.event.pull_request.base.ref }}" == "main" ]]; then
-          echo "Skip this check for Merge to main PR."
-          exit 0
+        if [[ ${{ inputs.included_file_patterns }} == false ]]; then
+          if [[ "${{ github.event.pull_request.base.ref }}" == "main" ]]; then
+            echo "Skip this check for Merge to main PR."
+            exit 0
+          fi
+        else
+          echo "Will check main branch."
         fi
         
         # Format file patterns
