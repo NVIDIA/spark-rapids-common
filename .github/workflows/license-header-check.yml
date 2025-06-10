@@ -36,6 +36,7 @@ jobs:
       - name: license-header-check
         uses: NVIDIA/spark-rapids-common/license-header-check@main
         with:
+          check_main: true
           included_file_patterns: |
             *.yml,
             *Dockerfile*,

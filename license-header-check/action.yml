@@ -23,6 +23,11 @@ inputs:
     description: "excluded file pattern"
     required: false
     type: string
+  check_main:
+    description: "check main branch or not"
+    required: false
+    type: boolean
+    default: false
 
 runs:
   using: "composite"
@@ -36,8 +41,8 @@ runs:
         CURRENT_YEAR=$(date +%Y)
         LICENSE_PATTERN="Copyright \(c\) .*?${CURRENT_YEAR},? NVIDIA CORPORATION."
 
-        # Skip for merge to main PR
-        if [[ "${{ github.event.pull_request.base.ref }}" == "main" ]]; then
+        # Skip check for main branch when check_main == false
+        if [[ "${{ inputs.check_main }}" == "false" && "${{ github.event.pull_request.base.ref }}" == "main" ]]; then
           echo "Skip this check for Merge to main PR."
           exit 0
         fi
