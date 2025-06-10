@@ -42,11 +42,9 @@ runs:
         LICENSE_PATTERN="Copyright \(c\) .*?${CURRENT_YEAR},? NVIDIA CORPORATION."
 
         # Skip check for main branch when check_main == false
-        if [[ "${{ inputs.check_main }}" == "false" ]]; then
-          if [[ "${{ github.event.pull_request.base.ref }}" == "main" ]]; then
-            echo "Skip this check for Merge to main PR."
-            exit 0
-          fi
+        if [[ "${{ inputs.check_main }}" == "false" && "${{ github.event.pull_request.base.ref }}" == "main" ]]; then
+          echo "Skip this check for Merge to main PR."
+          exit 0
         fi
         
         # Format file patterns
