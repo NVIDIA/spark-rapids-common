@@ -14,6 +14,8 @@
 
 FROM python:alpine
 
+
+
 WORKDIR /
 COPY automerge .
 RUN pip install requests && chmod +x /automerge
