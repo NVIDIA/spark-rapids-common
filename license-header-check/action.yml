@@ -47,8 +47,6 @@ runs:
             echo "Skip this check for Merge to main PR."
             exit 0
           fi
-        else
-          echo "Will check main branch."
         fi
         
         # Format file patterns

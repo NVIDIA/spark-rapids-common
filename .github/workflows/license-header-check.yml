@@ -41,3 +41,4 @@ jobs:
             *Dockerfile*,
             auto-merge/automerge,
             signoff-check/signoff-check
+          check_main: true
