@@ -168,7 +168,7 @@ class EnvDefault(argparse.Action):
 def strtobool(val):
     """Convert a string representation of truth to true (1) or false (0).
 
-    this function is copied from distutils.util to avoid deprecation waring https://www.python.org/dev/peps/pep-0632/
+    this function is copied from distutils.util to avoid deprecation warning https://www.python.org/dev/peps/pep-0632/
 
     True values are 'y', 'yes', 't', 'true', 'on', and '1'; false values
     are 'n', 'no', 'f', 'false', 'off', and '0'.  Raises ValueError if

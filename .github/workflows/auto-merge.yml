@@ -106,7 +106,7 @@ jobs:
             echo "continue_merge=true" >> $GITHUB_ENV
           else
             echo "continue_merge=false" >> $GITHUB_ENV
-            echo "Failed to find ${BRANCH_NAME}. Skip auto-merge..."
+            echo "Failed to find $BASE. Skip auto-merge..."
           fi
 
       - name: prepare code base if $FILE_USE_BASE has content
