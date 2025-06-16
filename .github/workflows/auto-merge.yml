@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.
+# Copyright (c) 2024-2025, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,6 +28,11 @@ on:
       branch: # github.event.pull_request.base.ref
         required: true
         type: string
+      file_use_base:
+        description: 'file/path that require to use content of BASE'
+        default: ''
+        required: false
+        type: string
     secrets:
       token:
         required: true
@@ -38,47 +43,114 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # TODO: make this step as a shared action
-      - name: Generate target branch
-        id: generate_version
+      - name: set HEAD ENV
         run: |
-          current_branch="${{ inputs.branch }}"
-          version=${current_branch#branch-}
-          
-          IFS='.' read -r -a parts <<< "$version"
-          year=${parts[0]}
-          month=${parts[1]}
-          month=$((10#$month + 2))
-          if [ $month -gt 12 ]; then
-            month=$((month - 12))
-            year=$((year + 1))
+          echo "HEAD=${{ inputs.branch }}" >> $GITHUB_ENV
+          echo "DELETE_HEAD=False" >> $GITHUB_ENV
+
+      - name: Generate target branch
+        run: |
+          # https://github.com/NVIDIA/spark-rapids-common/issues/34
+          if [[ "${{ inputs.branch }}" == release/* ]]; then
+            echo "BASE=main" >> $GITHUB_ENV
+          else # maintain compatibility support for branch-*
+            current_branch="${{ inputs.branch }}"
+            version=${current_branch#branch-}
+
+            IFS='.' read -r -a parts <<< "$version"
+            year=${parts[0]}
+            month=${parts[1]}
+            month=$((10#$month + 2))
+            if [ $month -gt 12 ]; then
+              month=$((month - 12))
+              year=$((year + 1))
+            fi
+
+            next_release=$(printf "%02d.%02d" $year $month)
+            echo "Next release is $next_release"
+            echo "BASE=branch-$next_release" >> $GITHUB_ENV
           fi
 
-          next_release=$(printf "%02d.%02d" $year $month)
-          echo "Next release is $next_release"
-          echo "target_branch=branch-$next_release" >> $GITHUB_ENV
+      - name: Check for existing v*.0 tag
+        run: |
+          branch="${{ inputs.branch }}"
+          if [[ "$branch" == release/* ]]; then
+            version="${branch#release/}"
+          elif [[ "$branch" == branch-* ]]; then
+            version="${branch#branch-}"
+          else
+            echo "Unsupported branch ${{ inputs.branch }}..."
+            exit 1
+          fi
+          tag_name="v${version}.0"
+          echo "Checking for tag $tag_name..."
 
-      # TODO: make this step as a shared action
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token ${{ secrets.token }}" \
+            https://api.github.com/repos/${{ inputs.owner }}/${{ inputs.repo }}/git/ref/tags/${tag_name})
+          if [ "$CODE" -eq 200 ]; then
+            echo "Tag $tag_name exists. Skipping merge..."
+            echo "continue_merge=false" >> $GITHUB_ENV
+          else
+            echo "Proceeding with merge..."
+            echo "continue_merge=true" >> $GITHUB_ENV
+          fi
+
       - name: Check if target branch exists
-        id: check_branch
+        if: env.continue_merge == 'true'
         run: |
           CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            https://api.github.com/repos/${{ inputs.owner }}/${{ inputs.repo }}/branches/${{ env.target_branch }})
+            https://api.github.com/repos/${{ inputs.owner }}/${{ inputs.repo }}/branches/${{ env.BASE }})
           echo "Response code: $CODE..."
 
           if [ $CODE -eq 200 ]; then
-            echo "branch_exists=true" >> $GITHUB_ENV
+            echo "continue_merge=true" >> $GITHUB_ENV
           else
-            echo "branch_exists=false" >> $GITHUB_ENV
+            echo "continue_merge=false" >> $GITHUB_ENV
             echo "Failed to find ${BRANCH_NAME}. Skip auto-merge..."
           fi
 
+      - name: prepare code base if $FILE_USE_BASE has content
+        uses: actions/checkout@v4
+        if: ${{ inputs.file_use_base != '' && env.continue_merge == 'true' }}
+        with:
+          ref: ${{ env.HEAD }} # force to fetch from the latest upstream instead of PR ref
+          token: ${{ secrets.token }}
+
+      - name: push intermediate branch for auto-merge
+        if: ${{ inputs.file_use_base != '' && env.continue_merge == 'true' }}
+        run: |
+          git config user.name "spark-rapids automation"
+          git config user.email "70000568+nvauto@users.noreply.github.com"
+
+          git fetch origin ${HEAD} ${BASE}
+          git checkout -b ${INTERMEDIATE_HEAD} origin/${HEAD}
+
+          # Sync the $BASE branch with the commits from the $HEAD branch,
+          # excluding the paths defined as $FILE_USE_BASE.
+          git checkout origin/${BASE} -- ${FILE_USE_BASE}
+
+          # If any $FILE_USE_BASE is updated in the HEAD branch,
+          # always change it to the corresponding one from the BASE branch.
+          [ ! -z "$(git status --porcelain=v1 --untracked=no)" ] && \
+            git commit -s -am "Auto-merge use ${BASE} versions"
+          git push origin ${INTERMEDIATE_HEAD} -f
+
+          # overwrite HEAD env
+          echo "HEAD=$INTERMEDIATE_HEAD" >> $GITHUB_ENV
+          echo "DELETE_HEAD=True" >> $GITHUB_ENV
+        env:
+          INTERMEDIATE_HEAD: bot-auto-merge-${{ env.HEAD }}
+          FILE_USE_BASE: ${{ inputs.file_use_base }}
+
       - name: auto-merge job
-        if: env.branch_exists == 'true'
-        uses: NVIDIA/spark-rapids-common/auto-merge@main
+        if: env.continue_merge == 'true'
+        uses: NVIDIA/spark-rapids-common/action-helper@main
+        with:
+          operator: auto-merge
         env:
           OWNER: ${{ inputs.owner }}
-          REPO_NAME: ${{ inputs.repo }}
-          HEAD: ${{ inputs.branch }}
-          BASE: ${{ env.target_branch }}
-          AUTOMERGE_TOKEN: ${{ secrets.token }}
+          REPO: ${{ inputs.repo }}
+          HEAD: ${{ env.HEAD }}
+          BASE: ${{ env.BASE }}
+          TOKEN: ${{ secrets.token }}
+          DELETE_HEAD: ${{ env.DELETE_HEAD }}
