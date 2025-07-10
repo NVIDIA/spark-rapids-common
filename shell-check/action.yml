@@ -45,7 +45,7 @@ runs:
         failed_files=()
         
         # Clean up any previous error log
-        rm -f "$error_log
+        rm -f "$error_log"
         
         # Format file patterns
         IFS="," read -r -a INCLUDE_PATTERNS <<< "$(echo "${{ inputs.included_file_patterns }}" | tr -d ' ' | tr -d '\n')"
