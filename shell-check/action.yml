@@ -90,16 +90,16 @@ runs:
             
             # Check if file exists
             # Run bash -n syntax check
-            if ! bash -n "$FILE" 2>&1 | tee -a "$tmp_error"; then
-                echo "❌ bash -n failed for $FILE" | tee -a "$tmp_error"
-                ((error_count++))
-            fi
+            bash -n "$FILE" > >(tee -a "$tmp_error") 2>&1 || {
+              echo "❌ bash -n failed for $FILE" | tee -a "$tmp_error"
+              ((error_count++))
+            }
               
             # Run shellcheck
-            if ! shellcheck --format=tty --color=always "$FILE" 2>&1 | tee -a "$tmp_error"; then
-                echo "❌ shellcheck failed for $FILE" | tee -a "$tmp_error"
-                ((error_count++))
-            fi
+            shellcheck --color=always "$FILE" > >(tee -a "$tmp_error") 2>&1 || {
+              echo "❌ shellcheck failed for $FILE" | tee -a "$tmp_error"
+              ((error_count++))
+            }
             
             # If errors were found, add to main log
             if [ -s "$tmp_error" ]; then
