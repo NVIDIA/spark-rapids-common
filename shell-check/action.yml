@@ -16,13 +16,14 @@ name: 'Shell Script Syntax Check'
 description: 'check shell script syntax'
 inputs:
   included_file_patterns:
-    description: "included file pattern"
+    description: "Comma-separated list of file patterns to include (e.g., '*.sh,*.bash')"
     required: true
     type: string
   excluded_file_patterns:
-    description: "excluded file pattern"
+    description: "Comma-separated list of file patterns to exclude (e.g., 'src/**')"
     required: false
     type: string
+    default: ""
 
 runs:
   using: "composite"
@@ -30,11 +31,21 @@ runs:
     - name: Install shellcheck
       shell: bash
       run: |
-        sudo apt-get update && sudo apt-get install -y shellcheck
+        sudo apt-get update
+        sudo apt-get install -y shellcheck
+      env:
+        DEBIAN_FRONTEND: noninteractive
+
     - name: Check shell scripts
       shell: bash
       run: |
-        set -e
+        # Initialize variables
+        error_log="shell_errors.log"
+        error_count=0
+        failed_files=()
+        
+        # Clean up any previous error log
+        rm -f "$error_log
         
         # Format file patterns
         IFS="," read -r -a INCLUDE_PATTERNS <<< "$(echo "${{ inputs.included_file_patterns }}" | tr -d ' ' | tr -d '\n')"
@@ -51,25 +62,82 @@ runs:
         FILES=($FILES $RENAME_FILES)
         echo "Files to be detected: ${FILES[@]}"
 
-        # Check license header
-        NO_LICENSE_FILES=""
+        # Check shell syntax
         for FILE in "${FILES[@]}"; do
-          INCLUDE=false
-          for INCLUDE_PATTERN in "${INCLUDE_PATTERNS[@]}"; do
-            if [[ $FILE == $INCLUDE_PATTERN ]]; then
-              INCLUDE=true
+          # Skip directories
+          [ -d "$FILE" ] && continue
+          # Check if file matches include patterns
+          included=false
+          for pattern in "${INCLUDE_PATTERNS[@]}"; do
+            if [[ $FILE == $pattern ]]; then
+              included=true
               break
             fi
           done
-          EXCLUDE=false
-          for EXCLUDE_PATTERN in "${EXCLUDE_PATTERNS[@]}"; do
-            if [[ $FILE == $EXCLUDE_PATTERN ]]; then
-              EXCLUDE=true
+          excluded=false
+          for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+            if [[ $FILE == $pattern ]]; then
+              excluded=true
               break
             fi
           done
-          if [[ $INCLUDE == true && $EXCLUDE == false ]]; then
-            echo "Checking $FILE"
-            bash -n $FILE && shellcheck $FILE
+          
+          if $included && ! $excluded; then
+            echo "🔍 Checking: $FILE"
+            
+            # Create a temporary file for this file's errors
+            tmp_error=$(mktemp)
+            
+            # Check if file exists
+            # Run bash -n syntax check
+            if ! bash -n "$FILE" 2>&1 | tee -a "$tmp_error"; then
+                echo "❌ bash -n failed for $FILE" | tee -a "$tmp_error"
+                ((error_count++))
+            fi
+              
+            # Run shellcheck
+            if ! shellcheck --format=tty --color=always "$FILE" 2>&1 | tee -a "$tmp_error"; then
+                echo "❌ shellcheck failed for $FILE" | tee -a "$tmp_error"
+                ((error_count++))
+            fi
+            
+            # If errors were found, add to main log
+            if [ -s "$tmp_error" ]; then
+                failed_files+=("$FILE")
+                echo -e "\n=== Errors in $FILE ===" >> "$error_log"
+                cat "$tmp_error" >> "$error_log"
+                echo -e "\n" >> "$error_log"
+            fi
+            
+            rm -f "$tmp_error"
           fi
         done
+        
+        # Final report
+        if [ -s "$error_log" ]; then
+          echo -e "\n❌ Found $error_count errors in ${#failed_files[@]} files:"
+          printf ' - %s\n' "${failed_files[@]}"
+          
+          echo "::group::Detailed Error Report"
+          cat "$error_log"
+          echo "::endgroup::"
+          
+          # Create GitHub annotations for each error
+          while IFS= read -r line; do
+              if [[ "$line" == *:*:*:* ]]; then
+                  # Extract filename, line number, and message
+                  file_path=$(echo "$line" | cut -d: -f1)
+                  line_num=$(echo "$line" | cut -d: -f2)
+                  message=$(echo "$line" | cut -d: -f4- | sed 's/^ *//')
+                  
+                  echo "::error file=$file_path,line=$line_num::$message"
+              fi
+          done < "$error_log"
+          
+          echo "::error::Found $error_count shell script errors"
+          exit 1
+        else
+          echo "✅ No shell script errors found"
+        fi
+      env:
+        SHELLCHECK_OPTS: "-e SC1090 -e SC1091"  # Ignore source not found errors
