@@ -36,6 +36,5 @@ jobs:
       - name: shell-check
         uses: YanxuanLiu/spark-rapids-common/shell-check@shellcheck
         with:
-          check_main: true
           included_file_patterns: |
             *.sh
