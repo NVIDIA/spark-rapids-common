@@ -16,7 +16,7 @@
 name: shell check
 
 on:
-  pull_request_target: # TODO: change back to pull_request after test
+  pull_request:
     types: [opened, synchronize, reopened]
 
 jobs:
