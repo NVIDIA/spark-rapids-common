@@ -28,7 +28,9 @@ runs:
   using: "composite"
   steps:
     - name: Install shellcheck
-      run: sudo apt-get update && sudo apt-get install -y shellcheck
+      shell: bash
+      run: |
+        sudo apt-get update && sudo apt-get install -y shellcheck
     - name: Check shell scripts
       shell: bash
       run: |
