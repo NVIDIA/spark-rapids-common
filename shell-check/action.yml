@@ -62,6 +62,8 @@ runs:
         FILES=($FILES $RENAME_FILES)
         echo "Files to be detected: ${FILES[@]}"
 
+        set +e
+
         # Check shell syntax
         for FILE in "${FILES[@]}"; do
           # Skip directories
