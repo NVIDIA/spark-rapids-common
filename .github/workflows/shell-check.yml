@@ -33,8 +33,5 @@ jobs:
         with:
           fetch-depth: ${{ env.PR_FETCH_DEPTH }}
 
-      - name: shell-check
-        uses: YanxuanLiu/spark-rapids-common/shell-check@shellcheck
-        with:
-          included_file_patterns: |
-            *.sh
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
