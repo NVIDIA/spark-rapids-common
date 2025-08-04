@@ -26,6 +26,7 @@ inputs:
   token:
     description: 'Token used for authentication'
     required: false
+    default: ${{ github.token }}
   ssh-key:
     description: 'SSH key for checkout'
     required: false
@@ -36,6 +37,10 @@ inputs:
     description: 'Enable strict SSH host checking'
     required: false
     default: 'true'
+  ssh-user:
+    description: 'The user to use when connecting to the remote SSH host. Default: git'
+    required: false
+    default: 'git'
   persist-credentials:
     description: 'Persist credentials in .git directory'
     required: false
@@ -45,6 +50,16 @@ inputs:
     required: false
   clean:
     description: 'Clean repository before checkout'
+    required: false
+    default: 'true'
+  filter:
+    description: 'Partially clone against a given filter. Overrides sparse-checkout if set'
+    required: false
+  sparse-checkout:
+    description: 'Do a sparse checkout on given patterns. Each pattern should be separated with new lines'
+    required: false
+  sparse-checkout-cone-mode:
+    description: 'Specifies whether to use cone-mode when doing a sparse checkout'
     required: false
     default: 'true'
   fetch-depth:
@@ -88,9 +103,13 @@ runs:
         ssh-key: ${{ inputs.ssh-key }}
         ssh-known-hosts: ${{ inputs.ssh-known-hosts }}
         ssh-strict: ${{ inputs.ssh-strict }}
+        ssh-user: ${{ inputs.ssh-user }}
         persist-credentials: ${{ inputs.persist-credentials }}
         path: ${{ inputs.path }}
         clean: ${{ inputs.clean }}
+        filter: ${{ inputs.filter }}
+        sparse-checkout: ${{ inputs.sparse-checkout }}
+        sparse-checkout-cone-mode: ${{ inputs.sparse-checkout-cone-mode }}
         fetch-depth: ${{ inputs.fetch-depth }}
         fetch-tags: ${{ inputs.fetch-tags }}
         show-progress: ${{ inputs.show-progress }}
