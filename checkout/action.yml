@@ -19,7 +19,7 @@ inputs:
   repository:
     description: |
       Repository name with owner. For example, actions/checkout
-      Default: ${{ github.repository }}
+      Default: The current repository (from the workflow run context).
     required: false
     default: ''
 
@@ -42,7 +42,7 @@ inputs:
       
       [Learn more about creating and using encrypted secrets](https://help.github.com/en/actions/automating-your-workflow-with-github-actions/creating-and-using-encrypted-secrets)
       
-      Default: ${{ github.token }}
+      Default: The automatically generated GITHUB_TOKEN for the current run.
     required: false
     default: ''
 
@@ -190,4 +190,3 @@ runs:
       uses: actions/checkout@v4
       with: 
         ${{ inputs }}
-        
