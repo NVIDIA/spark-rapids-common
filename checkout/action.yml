@@ -21,6 +21,7 @@ inputs:
       Repository name with owner. For example, actions/checkout
       Default: The current repository (from the workflow run context).
     required: false
+    default: ''
 
   ref:
     description: |
@@ -28,6 +29,7 @@ inputs:
       triggered a workflow, this defaults to the reference or SHA for that event.
       Otherwise, uses the default branch.
     required: false
+    default: ''
 
   token:
     description: |
@@ -42,6 +44,7 @@ inputs:
       
       Default: The automatically generated GITHUB_TOKEN for the current run.
     required: false
+    default: ''
 
   ssh-key:
     description: |
@@ -53,6 +56,7 @@ inputs:
       
       [Learn more about creating and using encrypted secrets](https://help.github.com/en/actions/automating-your-workflow-with-github-actions/creating-and-using-encrypted-secrets)
     required: false
+    default: ''
 
   ssh-known-hosts:
     description: |
@@ -61,6 +65,7 @@ inputs:
       `ssh-keyscan github.com`. The public key for github.com is always implicitly
       added.
     required: false
+    default: ''
 
   ssh-strict:
     description: |
@@ -69,6 +74,7 @@ inputs:
       the input `ssh-known-hosts` to configure additional hosts.
       Default: true
     required: false
+    default: ''
 
   ssh-user:
     description: |
@@ -76,29 +82,34 @@ inputs:
       used.
       Default: git
     required: false
+    default: ''
 
   persist-credentials:
     description: |
       Whether to configure the token or SSH key with the local git config
       Default: true
     required: false
+    default: ''
 
   path:
     description: |
       Relative path under $GITHUB_WORKSPACE to place the repository
     required: false
+    default: ''
 
   clean:
     description: |
       Whether to execute `git clean -ffdx && git reset --hard HEAD` before fetching
       Default: true
     required: false
+    default: ''
 
   filter:
     description: |
       Partially clone against a given filter. Overrides sparse-checkout if set.
       Default: null
     required: false
+    default: ''
 
   sparse-checkout:
     description: |
@@ -106,36 +117,42 @@ inputs:
       new lines.
       Default: null
     required: false
+    default: ''
 
   sparse-checkout-cone-mode:
     description: |
       Specifies whether to use cone-mode when doing a sparse checkout.
       Default: true
     required: false
+    default: ''
 
   fetch-depth:
     description: |
       Number of commits to fetch. 0 indicates all history for all branches and tags.
       Default: 1
     required: false
+    default: ''
 
   fetch-tags:
     description: |
       Whether to fetch tags, even if fetch-depth > 0.
       Default: false
     required: false
+    default: ''
 
   show-progress:
     description: |
       Whether to show progress status output when fetching.
       Default: true
     required: false
+    default: ''
 
   lfs:
     description: |
       Whether to download Git-LFS files
       Default: false
     required: false
+    default: ''
 
   submodules:
     description: |
@@ -147,6 +164,7 @@ inputs:
       
       Default: false
     required: false
+    default: ''
 
   set-safe-directory:
     description: |
@@ -154,6 +172,7 @@ inputs:
       config --global --add safe.directory <path>`
       Default: true
     required: false
+    default: ''
 
   github-server-url:
     description: |
@@ -162,11 +181,38 @@ inputs:
       running from unless specified. Example URLs are https://github.com or
       https://my-ghes-server.example.com
     required: false
+    default: ''
 
 runs:
   using: "composite"
   steps:
+    - name: Prepare non-empty inputs
+      id: prepare
+      shell: bash
+      run: |
+        params=""
+        
+        keys=$(echo "$INPUT_NAMES" | tr ' ' '\n')
+        
+        while IFS= read -r key; do
+          value="${inputs[$key]}"
+          
+          if [ -n "$value" ]; then
+            params+="\"$key\":\"$value\","
+          fi
+        done <<< "$keys"
+        
+        if [ -n "$params" ]; then
+          params="${params%,}}"
+        else
+          params="{}"
+        fi
+        
+        echo "params=$params" >> $GITHUB_OUTPUT
+      env:
+        INPUT_NAMES: ${{ join(keys(inputs), ' ') }}
+        GITHUB_OUTPUT: ${{ github.output_path }}
+
     - name: Checkout code
       uses: actions/checkout@v4
-      with: 
-        ${{ inputs }}
+      with: ${{ fromJSON(steps.prepare.outputs.params) }}
