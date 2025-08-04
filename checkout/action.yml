@@ -192,15 +192,14 @@ runs:
       run: |
         params=""
         
-        keys=$(echo "$INPUT_NAMES" | tr ' ' '\n')
+        keys=($INPUT_NAMES)
         
-        while IFS= read -r key; do
+        for key in "${keys[@]}"; do
           value="${inputs[$key]}"
-          
           if [ -n "$value" ]; then
             params+="\"$key\":\"$value\","
           fi
-        done <<< "$keys"
+        done
         
         if [ -n "$params" ]; then
           params="${params%,}}"
@@ -210,7 +209,7 @@ runs:
         
         echo "params=$params" >> $GITHUB_OUTPUT
       env:
-        INPUT_NAMES: ${{ join(keys(inputs), ' ') }}
+        INPUT_KEYS: ${{ join(keys(inputs), ' ') }}
         GITHUB_OUTPUT: ${{ github.output_path }}
 
     - name: Checkout code
