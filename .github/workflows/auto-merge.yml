@@ -110,7 +110,7 @@ jobs:
           fi
 
       - name: prepare code base if $FILE_USE_BASE has content
-        uses: actions/checkout@v4
+        uses: NVIDIA/spark-rapids-common/checkout@main
         if: ${{ inputs.file_use_base != '' && env.continue_merge == 'true' }}
         with:
           ref: ${{ env.HEAD }} # force to fetch from the latest upstream instead of PR ref

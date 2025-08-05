@@ -1,0 +1,119 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: 'Checkout'
+description: 'Wrapper for actions/checkout with full parameter support'
+
+inputs:
+  repository:
+    description: 'Repository name with owner'
+    required: false
+    default: ${{ github.repository }}
+  ref:
+    description: 'Ref to checkout'
+    required: false
+  token:
+    description: 'Token used for authentication'
+    required: false
+    default: ${{ github.token }}
+  ssh-key:
+    description: 'SSH key for checkout'
+    required: false
+  ssh-known-hosts:
+    description: 'Known hosts for SSH'
+    required: false
+  ssh-strict:
+    description: 'Enable strict SSH host checking'
+    required: false
+    default: 'true'
+  ssh-user:
+    description: 'The user to use when connecting to the remote SSH host. Default: git'
+    required: false
+    default: 'git'
+  persist-credentials:
+    description: 'Persist credentials in .git directory'
+    required: false
+    default: 'true'
+  path:
+    description: 'Relative path to checkout repository'
+    required: false
+  clean:
+    description: 'Clean repository before checkout'
+    required: false
+    default: 'true'
+  filter:
+    description: 'Partially clone against a given filter. Overrides sparse-checkout if set'
+    required: false
+  sparse-checkout:
+    description: 'Do a sparse checkout on given patterns. Each pattern should be separated with new lines'
+    required: false
+  sparse-checkout-cone-mode:
+    description: 'Specifies whether to use cone-mode when doing a sparse checkout'
+    required: false
+    default: 'true'
+  fetch-depth:
+    description: 'Fetch depth history'
+    required: false
+    default: '1'
+  fetch-tags:
+    description: 'Fetch tags history'
+    required: false
+    default: 'false'
+  show-progress:
+    description: 'Show fetch progress'
+    required: false
+    default: 'true'
+  lfs:
+    description: 'Enable LFS support'
+    required: false
+    default: 'false'
+  submodules:
+    description: 'Checkout submodules (true|recursive)'
+    required: false
+    default: 'false'
+  set-safe-directory:
+    description: 'Add safe directory config'
+    required: false
+    default: 'true'
+  github-server-url:
+    description: 'GitHub server URL'
+    required: false
+    default: 'https://github.com'
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.repository }}
+        ref: ${{ inputs.ref }}
+        token: ${{ inputs.token }}
+        ssh-key: ${{ inputs.ssh-key }}
+        ssh-known-hosts: ${{ inputs.ssh-known-hosts }}
+        ssh-strict: ${{ inputs.ssh-strict }}
+        ssh-user: ${{ inputs.ssh-user }}
+        persist-credentials: ${{ inputs.persist-credentials }}
+        path: ${{ inputs.path }}
+        clean: ${{ inputs.clean }}
+        filter: ${{ inputs.filter }}
+        sparse-checkout: ${{ inputs.sparse-checkout }}
+        sparse-checkout-cone-mode: ${{ inputs.sparse-checkout-cone-mode }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+        fetch-tags: ${{ inputs.fetch-tags }}
+        show-progress: ${{ inputs.show-progress }}
+        lfs: ${{ inputs.lfs }}
+        submodules: ${{ inputs.submodules }}
+        set-safe-directory: ${{ inputs.set-safe-directory }}
+        github-server-url: ${{ inputs.github-server-url }}
