@@ -13,7 +13,7 @@
 # limitations under the License.
 
 name: 'Shell Check'
-description: 'check shell syntax'
+description: 'Check shell syntax'
 inputs:
   excluded_codes:
     description: "Excluded issue codes (comma-separated). e.g. SC2086,SC2046"
