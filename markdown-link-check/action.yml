@@ -19,38 +19,38 @@ runs:
   using: "composite"
   steps:
     - name: Run markdown link check
+      id: markdown-link-check
       uses: gaurav-nelson/github-action-markdown-link-check@v1
       with:
         max-depth: -1
         use-verbose-mode: 'yes'
         base-branch: 'gh-pages'
-        output-format: json
-        output-file: link-results.json
 
     - name: Show error links summary
       if: always()
       shell: bash
       run: |
-        echo -e "\n\n### Error Links Summary ###"        
-        grep -B 1 '"status": [^2]' link-results.json | \
-        awk '
-          /"link":/ {
-            gsub(/^[ \t]+"link": "/, "", $0);
-            gsub(/",?$/, "", $0);
-            link = $0
+        echo "${{ steps.markdown-link-check.outputs.result }}" > markdown-link-check.log
+        echo -e "\n\n### 🔴 Broken Links Summary ###"
+        grep -A 2 "ERROR:" link-check.log | awk '
+          /FILE:/ {
+            filename = substr($0, 7)
+            next
           }
-          /"status":/ {
+          /\[✖\]/ {
+            link = $2
+            next
+          }
+          /STATUS:/ {
             status = $2
-            sub(/,/, "", status);
-          }
-          /"filename":/ {
-            gsub(/^[ \t]+"filename": "/, "", $0);
-            gsub(/",?$/, "", $0);
-            if (link != "" && status != "" && $0 != "") {
-              printf "[%s] %-60s => %s\n", status, link, $0
-              link = ""; status = ""
+            if (link != "" && status != "" && filename != "") {
+              printf "[%s] %-50s => %s\n", status, link, filename
             }
+            link = ""; status = ""; filename = ""
           }
         ' | sort -u
         
-        echo "### Total broken links: $(grep -c '"status": [^2]' link-results.json)"
+        count=$(grep -c "\[✖\]" link-check.log)
+        echo "### 🔍 Total broken links: ${count:-0}"
+        
+        rm -f link-check.log
