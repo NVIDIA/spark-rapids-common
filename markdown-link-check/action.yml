@@ -30,9 +30,8 @@ runs:
       id: error-extractor
       shell: bash
       run: |
-        LOG=$(grep -A 1 -E 'FILE: |\[✖\]' "$GITHUB_STEP_SUMMARY" | grep -v '^--$')
-        
-        echo "$LOG" | awk '
+        grep -A 1 'FILE: ' $GITHUB_STEP_SUMMARY | 
+        awk '
           /FILE: / {
             file = $2
             next
@@ -40,12 +39,14 @@ runs:
           /\[✖\]/ {
             print file ": " $0
           }
-        ' > broken_links.log
+        ' | tee >(sed -e 's/^/  /' >> $GITHUB_STEP_SUMMARY)
         
-        echo "## 📛 Broken Links Report" >> $GITHUB_STEP_SUMMARY
-        echo "```" >> $GITHUB_STEP_SUMMARY
-        cat broken_links.log >> $GITHUB_STEP_SUMMARY
-        echo "```" >> $GITHUB_STEP_SUMMARY
+        if grep -q '\[✖\]' $GITHUB_STEP_SUMMARY; then
+          echo "## ❌ Broken Links Detected" | tee -a $GITHUB_STEP_SUMMARY
+          exit 1
+        else
+          echo "## ✅ All Links Validated Successfully" | tee -a $GITHUB_STEP_SUMMARY
+        fi
         
       env:
         GITHUB_STEP_SUMMARY: ${{ github.step_summary }}
