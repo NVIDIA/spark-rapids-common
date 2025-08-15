@@ -30,27 +30,33 @@ runs:
       if: always()
       shell: bash
       run: |
-        echo "${{ steps.markdown-link-check.outputs.stdout }}" > markdown-link-check.log
+        OUTPUT=$(grep -A 3 "ERROR:" "$GITHUB_STEP_SUMMARY" || true)
+    
+        if [ -z "$OUTPUT" ]; then
+          echo "✅ All links are working"
+          exit 0
+        fi
+        
         echo -e "\n\n### 🔴 Broken Links Summary ###"
-        grep -A 2 "ERROR:" markdown-link-check.log | awk '
-          /FILE:/ {
-            filename = substr($0, 7)
-            next
+        echo "$OUTPUT" | awk '
+          BEGIN {
+            link = ""; status = ""; file = ""
           }
           /\[✖\]/ {
-            link = $2
-            next
+            gsub("\\[✖\\] ", "", $0)
+            link = $0
           }
           /STATUS:/ {
             status = $2
-            if (link != "" && status != "" && filename != "") {
-              printf "[%s] %-50s => %s\n", status, link, filename
+          }
+          /FILE:/ {
+            file = substr($0, 7)
+            if (link != "" && status != "" && file != "") {
+              printf "[%s] %-50s => %s\n", status, link, file
+              link = ""; status = ""; file = ""
             }
-            link = ""; status = ""; filename = ""
           }
         ' | sort -u
         
-        count=$(grep -c "\[✖\]" markdown-link-check.log)
-        echo "### 🔍 Total broken links: ${count:-0}"
-        
-        rm -f markdown-link-check.log
+        count=$(echo "$OUTPUT" | grep -c "\[✖\]")
+        echo "### 🔍 Total broken links: $count"
