@@ -27,6 +27,7 @@ runs:
         base-branch: 'gh-pages'
 
     - name: Capture logs via tee
+      if: always()
       shell: bash
       run: |
         # 运行原始action但通过tee捕获输出
