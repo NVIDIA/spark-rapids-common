@@ -20,32 +20,8 @@ runs:
   steps:
     - name: Run markdown link check
       id: markdown-link-check
-      uses: gaurav-nelson/github-action-markdown-link-check@v1
+      uses: tcort/github-action-markdown-link-check@v1
       with:
         max-depth: -1
         use-verbose-mode: 'yes'
         base-branch: 'gh-pages'
-
-    - name: Capture logs via tee
-      if: always()
-      shell: bash
-      run: |
-        # 运行原始action但通过tee捕获输出
-        echo "::group::Markdown Link Check"
-        npx markdown-link-check@https://github.com/gaurav-nelson/github-action-markdown-link-check \
-          --max-depth=${{ inputs.max-depth }} \
-          --verbose=${{ inputs.use-verbose-mode }} \
-          --base-branch=${{ inputs.base-branch }} \
-          . 2>&1 | tee mlc.log
-        echo "::endgroup::"
-        
-        # 保存日志
-        LOG_CONTENT=$(cat mlc.log)
-        echo "LINK_CHECK_LOG<<EOF" >> $GITHUB_ENV
-        echo "$LOG_CONTENT" >> $GITHUB_ENV
-        echo "EOF" >> $GITHUB_ENV
-        
-        # 调试输出
-        echo "### CAPTURED LOG (first 500 chars) ###"
-        echo "${LOG_CONTENT:0:500}"
-        echo "### END LOG PREVIEW ###"
