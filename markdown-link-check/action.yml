@@ -25,3 +25,20 @@ runs:
         max-depth: -1
         use-verbose-mode: 'yes'
         base-branch: 'gh-pages'
+    
+    - name: Extract and print broken links
+      if: always()
+      shell: bash
+      run: |
+        OUTPUT="${{ steps.markdown-link-check.outputs.output }}"
+        echo "OUTPUT: $OUTPUT"
+        
+        if [ -z "$OUTPUT" ]; then
+          OUTPUT=$(grep -E '^::|^\s*\[' "$GITHUB_STEP_SUMMARY" || true)
+        fi
+        
+        echo "### Broken Links Found" >> $GITHUB_STEP_SUMMARY
+        echo "$OUTPUT" | grep -E '\[✖\]|ERROR:' >> $GITHUB_STEP_SUMMARY || echo "No broken links found"
+        
+        echo "Extracted broken links:"
+        echo "$OUTPUT" | grep -E '\[✖\]|ERROR:' || echo "No broken links found"
