@@ -26,37 +26,26 @@ runs:
         use-verbose-mode: 'yes'
         base-branch: 'gh-pages'
 
-    - name: Show error links summary
-      if: always()
+    - name: Extract broken links
+      id: error-extractor
       shell: bash
       run: |
-        OUTPUT=$(grep -A 3 "ERROR:" "$GITHUB_STEP_SUMMARY" || true)
-    
-        if [ -z "$OUTPUT" ]; then
-          echo "✅ All links are working"
-          exit 0
-        fi
+        LOG=$(grep -A 1 -E 'FILE: |\[✖\]' "$GITHUB_STEP_SUMMARY" | grep -v '^--$')
         
-        echo -e "\n\n### 🔴 Broken Links Summary ###"
-        echo "$OUTPUT" | awk '
-          BEGIN {
-            link = ""; status = ""; file = ""
+        echo "$LOG" | awk '
+          /FILE: / {
+            file = $2
+            next
           }
           /\[✖\]/ {
-            gsub("\\[✖\\] ", "", $0)
-            link = $0
+            print file ": " $0
           }
-          /STATUS:/ {
-            status = $2
-          }
-          /FILE:/ {
-            file = substr($0, 7)
-            if (link != "" && status != "" && file != "") {
-              printf "[%s] %-50s => %s\n", status, link, file
-              link = ""; status = ""; file = ""
-            }
-          }
-        ' | sort -u
+        ' > broken_links.log
         
-        count=$(echo "$OUTPUT" | grep -c "\[✖\]")
-        echo "### 🔍 Total broken links: $count"
+        echo "## 📛 Broken Links Report" >> $GITHUB_STEP_SUMMARY
+        echo "```" >> $GITHUB_STEP_SUMMARY
+        cat broken_links.log >> $GITHUB_STEP_SUMMARY
+        echo "```" >> $GITHUB_STEP_SUMMARY
+        
+      env:
+        GITHUB_STEP_SUMMARY: ${{ github.step_summary }}
