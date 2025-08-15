@@ -25,35 +25,8 @@ runs:
         max-depth: -1
         use-verbose-mode: 'yes'
         base-branch: 'gh-pages'
-      shell: bash
+    
+    - name: Save output
       run: |
-        echo "::group::Markdown Link Check Output"
-        npx markdown-link-check@latest **/*.md --verbose 2>&1 | tee link-check.log
-        echo "::endgroup::"
-        echo "exit_code=$?" >> $GITHUB_OUTPUT
-
-    - name: Extract and print broken links
-      if: always()
+        echo "LINK_CHECK_OUTPUT=${{ steps.markdown-link-check.outputs.log }}" >> $GITHUB_ENV
       shell: bash
-      run: |
-        cat link-check.log
-        if [ "${{ steps.markdown-link-check.outputs.exit_code }}" != "0" ]; then
-          echo "Link check found errors. Parsing log..."
-          ERRORS=$(grep -E '\[✖\]|ERROR:' link-check.log || true)
-          
-          if [ -n "$ERRORS" ]; then
-            echo "### ❌ Broken Links Found" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "$ERRORS" >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            echo "Found broken links:" 
-            echo "$ERRORS"
-            exit 1  # 使步骤失败
-          else
-            echo "Link check failed but no broken links detected." 
-            echo "Check full log for network issues."
-          fi
-        else
-          echo "### ✅ All links are valid" >> $GITHUB_STEP_SUMMARY
-          echo "No broken links found"
-        fi
