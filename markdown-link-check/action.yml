@@ -29,6 +29,7 @@ runs:
 
     - name: Show error links summary
       if: always()
+      shell: bash
       run: |
         echo -e "\n\n### Error Links Summary ###"        
         grep -B 1 '"status": [^2]' link-results.json | \
