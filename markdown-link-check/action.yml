@@ -31,6 +31,10 @@ runs:
       if: ${{ always() }}
       shell: bash
       run: |
+        echo "GITHUB_STEP_SUMMARY path: $GITHUB_STEP_SUMMARY"
+        echo "--- START OF STEP SUMMARY CONTENT ---"
+        cat "$GITHUB_STEP_SUMMARY"
+        echo "--- END OF STEP SUMMARY CONTENT ---"
         if grep -q '\[✖\]' "$GITHUB_STEP_SUMMARY"; then
           echo "## ❌ Broken Links Detected"
           
