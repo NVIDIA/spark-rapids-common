@@ -30,7 +30,7 @@ runs:
       if: always()
       shell: bash
       run: |
-        echo "${{ steps.markdown-link-check.outputs.result }}" > markdown-link-check.log
+        echo "${{ steps.markdown-link-check.outputs.stdout }}" > markdown-link-check.log
         echo -e "\n\n### 🔴 Broken Links Summary ###"
         grep -A 2 "ERROR:" markdown-link-check.log | awk '
           /FILE:/ {
