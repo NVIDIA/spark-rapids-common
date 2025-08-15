@@ -27,6 +27,7 @@ runs:
         base-branch: 'gh-pages'
 
     - name: Capture and debug action logs
+      if: always()
       shell: bash
       run: |
         LOG_CONTENT=$(curl -s -H "Accept: application/vnd.github.v3+json" \
