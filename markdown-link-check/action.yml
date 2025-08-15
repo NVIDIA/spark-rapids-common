@@ -28,6 +28,7 @@ runs:
 
     - name: Extract broken links
       id: error-extractor
+      if: ${{ always() }}
       shell: bash
       run: |
         grep -A 1 'FILE: ' $GITHUB_STEP_SUMMARY | 
