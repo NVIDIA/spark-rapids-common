@@ -26,23 +26,25 @@ runs:
         use-verbose-mode: 'yes'
         base-branch: 'gh-pages'
 
-    - name: Capture and debug action logs
-      if: always()
+    - name: Capture logs via tee
       shell: bash
       run: |
-        LOG_CONTENT=$(curl -s -H "Accept: application/vnd.github.v3+json" \
-          -H "Authorization: token ${{ github.token }}" \
-          "${{ github.server_url }}/repos/${{ github.repository }}/actions/jobs/${{ github.job }}/logs" \
-          | awk '/^##\[group\]Run gaurav-nelson\/github-action-markdown-link-check/{flag=1;next}/##\[endgroup\]/{flag=0}flag')
+        # 运行原始action但通过tee捕获输出
+        echo "::group::Markdown Link Check"
+        npx markdown-link-check@https://github.com/gaurav-nelson/github-action-markdown-link-check \
+          --max-depth=${{ inputs.max-depth }} \
+          --verbose=${{ inputs.use-verbose-mode }} \
+          --base-branch=${{ inputs.base-branch }} \
+          . 2>&1 | tee mlc.log
+        echo "::endgroup::"
         
-        echo "### START OF CAPTURED LOG ###"
-        echo "$LOG_CONTENT"
-        echo "### END OF CAPTURED LOG ###"
-        
-        LOG_LENGTH=${#LOG_CONTENT}
-        echo "Captured log length: $LOG_LENGTH characters"
-        
+        # 保存日志
+        LOG_CONTENT=$(cat mlc.log)
         echo "LINK_CHECK_LOG<<EOF" >> $GITHUB_ENV
         echo "$LOG_CONTENT" >> $GITHUB_ENV
         echo "EOF" >> $GITHUB_ENV
         
+        # 调试输出
+        echo "### CAPTURED LOG (first 500 chars) ###"
+        echo "${LOG_CONTENT:0:500}"
+        echo "### END LOG PREVIEW ###"
