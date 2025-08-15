@@ -27,6 +27,7 @@ runs:
         base-branch: 'gh-pages'
     
     - name: Save output
+      shell: bash
+      if: always()
       run: |
         echo "LINK_CHECK_OUTPUT=${{ steps.markdown-link-check.outputs.log }}" >> $GITHUB_ENV
-      shell: bash
