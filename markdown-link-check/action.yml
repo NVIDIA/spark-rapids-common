@@ -24,51 +24,32 @@ runs:
         max-depth: -1
         use-verbose-mode: 'yes'
         base-branch: 'gh-pages'
-        
-    - name: Summarize failed links
-      shell: bash
+        output-format: json
+        output-file: link-results.json
+
+    - name: Show error links summary
+      if: always()
       run: |
-        # Function to summarize failed links from the previous step output
-        summarize_failures() {
-          echo ""
-          echo "=========================================="
-          echo "FAILED LINKS SUMMARY"
-          echo "=========================================="
-          
-          # Get the output from the previous step (markdown link check)
-          # We'll parse the logs to find failed links
-          local failed_links=()
-          local failed_files=()
-          local total_failures=0
-          
-          # Look for common failure patterns in the logs
-          # This will capture the output from the markdown-link-check action
-          if [ -f "$GITHUB_STEP_SUMMARY" ]; then
-            # Try to read from step summary if available
-            while IFS= read -r line; do
-              if [[ "$line" =~ ✗ ]] || [[ "$line" =~ ERROR ]] || [[ "$line" =~ FAIL ]] || [[ "$line" =~ "HTTP [^2]" ]]; then
-                failed_links+=("$line")
-                ((total_failures++))
-              fi
-            done < "$GITHUB_STEP_SUMMARY"
-          fi
-          
-          # Also check for failures in the action output
-          # The markdown-link-check action typically outputs failures to stderr
-          if [ $total_failures -eq 0 ]; then
-            echo "Note: Detailed failure information should be visible in the markdown link check step above."
-            echo "Look for lines marked with ✗, ERROR, FAIL, or non-200 HTTP status codes."
-          else
-            echo "Total failures found: $total_failures"
-            echo ""
-            echo "Failed links:"
-            printf '  %s\n' "${failed_links[@]}"
-          fi
-          
-          echo ""
-          echo "For detailed failure information, check the 'Run markdown link check' step above."
-        }
+        echo -e "\n\n### Error Links Summary ###"        
+        grep -B 1 '"status": [^2]' link-results.json | \
+        awk '
+          /"link":/ {
+            gsub(/^[ \t]+"link": "/, "", $0);
+            gsub(/",?$/, "", $0);
+            link = $0
+          }
+          /"status":/ {
+            status = $2
+            sub(/,/, "", status);
+          }
+          /"filename":/ {
+            gsub(/^[ \t]+"filename": "/, "", $0);
+            gsub(/",?$/, "", $0);
+            if (link != "" && status != "" && $0 != "") {
+              printf "[%s] %-60s => %s\n", status, link, $0
+              link = ""; status = ""
+            }
+          }
+        ' | sort -u
         
-        # Run the summary
-        summarize_failures
-        
+        echo "### Total broken links: $(grep -c '"status": [^2]' link-results.json)"
