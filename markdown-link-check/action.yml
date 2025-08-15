@@ -32,7 +32,7 @@ runs:
       run: |
         echo "${{ steps.markdown-link-check.outputs.result }}" > markdown-link-check.log
         echo -e "\n\n### 🔴 Broken Links Summary ###"
-        grep -A 2 "ERROR:" link-check.log | awk '
+        grep -A 2 "ERROR:" markdown-link-check.log | awk '
           /FILE:/ {
             filename = substr($0, 7)
             next
@@ -50,7 +50,7 @@ runs:
           }
         ' | sort -u
         
-        count=$(grep -c "\[✖\]" link-check.log)
+        count=$(grep -c "\[✖\]" markdown-link-check.log)
         echo "### 🔍 Total broken links: ${count:-0}"
         
-        rm -f link-check.log
+        rm -f markdown-link-check.log
