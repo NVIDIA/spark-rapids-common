@@ -31,10 +31,16 @@ runs:
       if: ${{ always() }}
       shell: bash
       run: |
-        echo "GITHUB_STEP_SUMMARY path: $GITHUB_STEP_SUMMARY"
-        echo "--- START OF STEP SUMMARY CONTENT ---"
-        cat "$GITHUB_STEP_SUMMARY"
-        echo "--- END OF STEP SUMMARY CONTENT ---"
+        LOG_URL="https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs"
+        JOB_ID=$(curl -s -H "Authorization: Bearer ${{ github.token }}" "$LOG_URL" | jq -r '.jobs[] | select(.name == "${{ github.job }}") | .id')
+        LOG_URL="https://api.github.com/repos/${{ github.repository }}/actions/jobs/$JOB_ID/logs"
+        
+        curl -s -H "Authorization: Bearer ${{ github.token }}" -H "Accept: application/vnd.github.v3+json" "$LOG_URL" > full_log.txt
+        
+        sed -n '/> Run gaurav-nelson\/github-action-markdown-link-check@v1/,/^##\[endgroup\]/p' full_log.txt > mlc_output.log
+
+        cat mlc_output.log
+
         if grep -q '\[✖\]' "$GITHUB_STEP_SUMMARY"; then
           echo "## ❌ Broken Links Detected"
           
