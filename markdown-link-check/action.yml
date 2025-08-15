@@ -26,42 +26,22 @@ runs:
         use-verbose-mode: 'yes'
         base-branch: 'gh-pages'
 
-    - name: Extract broken links
-      id: error-extractor
-      if: ${{ always() }}
+    - name: Capture and debug action logs
       shell: bash
       run: |
-        LOG_URL="https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs"
-        JOB_ID=$(curl -s -H "Authorization: Bearer ${{ github.token }}" "$LOG_URL" | jq -r '.jobs[] | select(.name == "${{ github.job }}") | .id')
-        LOG_URL="https://api.github.com/repos/${{ github.repository }}/actions/jobs/$JOB_ID/logs"
+        LOG_CONTENT=$(curl -s -H "Accept: application/vnd.github.v3+json" \
+          -H "Authorization: token ${{ github.token }}" \
+          "${{ github.server_url }}/repos/${{ github.repository }}/actions/jobs/${{ github.job }}/logs" \
+          | awk '/^##\[group\]Run gaurav-nelson\/github-action-markdown-link-check/{flag=1;next}/##\[endgroup\]/{flag=0}flag')
         
-        curl -s -H "Authorization: Bearer ${{ github.token }}" -H "Accept: application/vnd.github.v3+json" "$LOG_URL" > full_log.txt
+        echo "### START OF CAPTURED LOG ###"
+        echo "$LOG_CONTENT"
+        echo "### END OF CAPTURED LOG ###"
         
-        sed -n '/> Run gaurav-nelson\/github-action-markdown-link-check@v1/,/^##\[endgroup\]/p' full_log.txt > mlc_output.log
-
-        cat mlc_output.log
-
-        if grep -q '\[✖\]' "$GITHUB_STEP_SUMMARY"; then
-          echo "## ❌ Broken Links Detected"
-          
-          awk '
-            BEGIN { file = "unknown" }
-            /^FILE: / {
-              file = $2
-              next
-            }
-            /\[✖\]/ {
-              print file ": " $0
-            }
-          ' "$GITHUB_STEP_SUMMARY" | while IFS= read -r line; do
-            echo "  $line"
-          done
-          
-          echo "Total broken links: $(grep -c '\[✖\]' "$GITHUB_STEP_SUMMARY")"
-          exit 1
-        else
-          echo "## ✅ All Links Validated Successfully"
-          exit 0
-        fi
-      env:
-        GITHUB_STEP_SUMMARY: ${{ github.step_summary }}
+        LOG_LENGTH=${#LOG_CONTENT}
+        echo "Captured log length: $LOG_LENGTH characters"
+        
+        echo "LINK_CHECK_LOG<<EOF" >> $GITHUB_ENV
+        echo "$LOG_CONTENT" >> $GITHUB_ENV
+        echo "EOF" >> $GITHUB_ENV
+        

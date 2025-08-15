@@ -21,6 +21,8 @@ on:
 
 jobs:
   markdown-link-check:
+    permissions:
+        actions: read
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
