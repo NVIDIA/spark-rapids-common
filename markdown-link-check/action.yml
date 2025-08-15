@@ -1,0 +1,74 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: 'Markdown Link Check'
+description: 'Check markdown links'
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run markdown link check
+      uses: gaurav-nelson/github-action-markdown-link-check@v1
+      with:
+        max-depth: -1
+        use-verbose-mode: 'yes'
+        base-branch: 'gh-pages'
+        
+    - name: Summarize failed links
+      shell: bash
+      run: |
+        # Function to summarize failed links from the previous step output
+        summarize_failures() {
+          echo ""
+          echo "=========================================="
+          echo "FAILED LINKS SUMMARY"
+          echo "=========================================="
+          
+          # Get the output from the previous step (markdown link check)
+          # We'll parse the logs to find failed links
+          local failed_links=()
+          local failed_files=()
+          local total_failures=0
+          
+          # Look for common failure patterns in the logs
+          # This will capture the output from the markdown-link-check action
+          if [ -f "$GITHUB_STEP_SUMMARY" ]; then
+            # Try to read from step summary if available
+            while IFS= read -r line; do
+              if [[ "$line" =~ ✗ ]] || [[ "$line" =~ ERROR ]] || [[ "$line" =~ FAIL ]] || [[ "$line" =~ "HTTP [^2]" ]]; then
+                failed_links+=("$line")
+                ((total_failures++))
+              fi
+            done < "$GITHUB_STEP_SUMMARY"
+          fi
+          
+          # Also check for failures in the action output
+          # The markdown-link-check action typically outputs failures to stderr
+          if [ $total_failures -eq 0 ]; then
+            echo "Note: Detailed failure information should be visible in the markdown link check step above."
+            echo "Look for lines marked with ✗, ERROR, FAIL, or non-200 HTTP status codes."
+          else
+            echo "Total failures found: $total_failures"
+            echo ""
+            echo "Failed links:"
+            printf '  %s\n' "${failed_links[@]}"
+          fi
+          
+          echo ""
+          echo "For detailed failure information, check the 'Run markdown link check' step above."
+        }
+        
+        # Run the summary
+        summarize_failures
+        
