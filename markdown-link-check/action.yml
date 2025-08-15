@@ -25,7 +25,7 @@ runs:
         max-depth: -1
         use-verbose-mode: 'yes'
         base-branch: 'gh-pages'
-        shell: bash
+      shell: bash
       run: |
         echo "::group::Markdown Link Check Output"
         npx markdown-link-check@latest **/*.md --verbose 2>&1 | tee link-check.log
