@@ -30,4 +30,6 @@ runs:
       shell: bash
       if: always()
       run: |
-        echo "LINK_CHECK_OUTPUT=${{ steps.markdown-link-check.outputs.log }}" >> $GITHUB_ENV
+        echo "========= test start =========="
+        echo "$MLC_OUTPUT"
+        echo "========= test end =========="
