@@ -32,28 +32,41 @@ runs:
       run: |
         output=$(echo "$MLC_OUTPUT")
         
-        if grep -q '\[✖\]' <<< "$output"; then
+        if echo "$output" | grep -q '\[✖\]'; then
           echo "##[error]Found broken links:"
           echo "========================================"
           
           current_file=""
           error_count=0
+          in_error_block=false
+          error_description=""
           
           while IFS= read -r line; do
             if [[ "$line" =~ ^FILE:\ (.+) ]]; then
               current_file="${BASH_REMATCH[1]}"
+              in_error_block=false
             elif [[ "$line" =~ \[✖\]\ (.+)\ →\ Status:\ ([0-9]+) ]]; then
               ((error_count++))
               link="${BASH_REMATCH[1]}"
               status="${BASH_REMATCH[2]}"
+              in_error_block=true
+              
+              error_description=$(echo "$line" | sed -E 's/.*Status: [0-9]+ //')
               
               echo "📄 File: $current_file"
               echo "🔗 Link: $link"
               echo "🛑 Status: $status"
-              echo "----------------------------------------"
+              echo "📝 Error description:"
+            elif $in_error_block; then
+              if [[ "$line" =~ ^\ *$ ]] || [[ "$line" =~ ^[^\ ] ]]; then
+                in_error_block=false
+              else
+                echo "   $line"
+              fi
             fi
           done <<< "$output"
           
+          echo "----------------------------------------"
           echo "========================================"
           echo "##[error]Found $error_count broken links"
           
