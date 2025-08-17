@@ -30,5 +30,44 @@ runs:
       shell: bash
       if: always()
       run: |
-        output="$MLC_OUTPUT"
-        echo "$output"
+        {
+          has_error=0
+          current_file=""
+          broken_links=()
+          
+          function output_broken_links() {
+              if [ ${#broken_links[@]} -gt 0 ]; then
+                  has_error=1
+                  echo "File: $current_file"
+                  for link_info in "${broken_links[@]}"; do
+                      echo "  Broken link: $link_info"
+                  done
+                  echo ""
+              fi
+          }
+          
+          while IFS= read -r line; do
+              if [[ $line =~ ^[[:space:]]*FILE:[[:space:]]*(.+) ]]; then
+                  filename="${BASH_REMATCH[1]}"
+                  if [ -n "$current_file" ]; then
+                      output_broken_links
+                  fi
+                  current_file="$filename"
+                  broken_links=()
+              elif [[ $line =~ ^[[:space:]]*\[✖\]\ ([^[:space:]]+).*Status:\ ([0-9]+) ]]; then
+                  url="${BASH_REMATCH[1]}"
+                  status="${BASH_REMATCH[2]}"
+                  broken_links+=("$url (Status: $status)")
+              fi
+          done <<< "$MLC_OUTPUT"
+          
+          if [ -n "$current_file" ]; then
+              output_broken_links
+          fi
+          
+          if [ $has_error -eq 0 ]; then
+              echo "All links are good!"
+          else
+              echo "Found broken links in the above files"
+          fi
+        } || true
