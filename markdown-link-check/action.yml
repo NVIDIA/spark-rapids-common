@@ -30,26 +30,28 @@ runs:
       shell: bash
       if: always()
       run: |
-        if grep -q 'ERROR:' <<< "$MLC_OUTPUT"; then
-          echo "Found broken links:"
-          echo "-------------------------------"
+        if grep -q '\[✖\]' <<< "$MLC_OUTPUT"; then
+          echo "##Error found:"
+          echo "========================================"
           
-          echo "$MLC_OUTPUT" | grep -E '(FILE:|ERROR:)' | while read -r line; do
-            if [[ $line == FILE:* ]]; then
+          current_file=""
+          
+          echo "$MLC_OUTPUT" | while IFS= read -r line; do
+            if [[ "$line" == FILE:* ]]; then
               current_file="${line#FILE: }"
-            elif [[ $line == *ERROR:* ]]; then
-              link=$(echo "$line" | sed -E 's/.*https?:\/\/[^ ]+//; s/ .*//')
-              status=$(echo "$line" | grep -oE 'status: [0-9]+' | cut -d' ' -f2)
+            elif [[ "$line" == *'[✖]'* ]]; then
+              link=$(echo "$line" | grep -o 'https\?://[^ ]*' | head -1)
+              status=$(echo "$line" | grep -o 'Status: [0-9]\+' | cut -d' ' -f2)
               
-              printf "%s\n%s\n%s\n\n" \
-                "$current_file" \
-                "$link" \
-                "Status: $status"
+              echo "📄 File: $current_file"
+              echo "🔗 Link: $link"
+              echo "🛑 Status: $status"
+              echo "----------------------------------------"
             fi
           done
           
-          echo "-------------------------------"
+          echo "========================================"
           exit 1
         else
-          echo "All links are valid"
+          echo "✅ All links are valid"
         fi
