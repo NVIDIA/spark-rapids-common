@@ -30,7 +30,7 @@ runs:
       shell: bash
       if: always()
       run: |
-        output=$(cat "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "$MLC_OUTPUT")
+        output=$(echo "$MLC_OUTPUT")
         
         if grep -q '\[✖\]' <<< "$output"; then
           echo "##[error]Found broken links:"
