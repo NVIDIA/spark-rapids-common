@@ -30,27 +30,33 @@ runs:
       shell: bash
       if: always()
       run: |
-        if grep -q '\[✖\]' <<< "$MLC_OUTPUT"; then
-          echo "##Error found:"
+        output=$(cat "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "$MLC_OUTPUT")
+        
+        if grep -q '\[✖\]' <<< "$output"; then
+          echo "##[error]Found broken links:"
           echo "========================================"
           
           current_file=""
+          error_count=0
           
-          echo "$MLC_OUTPUT" | while IFS= read -r line; do
-            if [[ "$line" == FILE:* ]]; then
-              current_file="${line#FILE: }"
-            elif [[ "$line" == *'[✖]'* ]]; then
-              link=$(echo "$line" | grep -o 'https\?://[^ ]*' | head -1)
-              status=$(echo "$line" | grep -o 'Status: [0-9]\+' | cut -d' ' -f2)
+          while IFS= read -r line; do
+            if [[ "$line" =~ ^FILE:\ (.+) ]]; then
+              current_file="${BASH_REMATCH[1]}"
+            elif [[ "$line" =~ \[✖\]\ (.+)\ →\ Status:\ ([0-9]+) ]]; then
+              ((error_count++))
+              link="${BASH_REMATCH[1]}"
+              status="${BASH_REMATCH[2]}"
               
               echo "📄 File: $current_file"
               echo "🔗 Link: $link"
               echo "🛑 Status: $status"
               echo "----------------------------------------"
             fi
-          done
+          done <<< "$output"
           
           echo "========================================"
+          echo "##[error]Found $error_count broken links"
+          
           exit 1
         else
           echo "✅ All links are valid"
