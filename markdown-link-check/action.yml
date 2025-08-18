@@ -34,7 +34,7 @@ runs:
         current_file=""
         files=()
         summaries=()
-        in_summary_section=0
+        in_summary_section=0 # Flag to indicate if we are in the summary section
         
         # Process output line by line
         while IFS= read -r line; do
@@ -49,7 +49,6 @@ runs:
                     in_summary_section=1
                     # Start new summary for this file
                     files+=("$current_file")
-                    summaries+=("$line")
                 fi
             
             # Collect summary content
