@@ -63,18 +63,15 @@ runs:
                     has_errors=1
                 fi
             fi
-        done <<< "$MLC_OUTPUT"
+        done <<< "$MLC_OUTPUT" # This is the output of the markdown link check action
         
         # Output final conclusion
         if [ $has_errors -eq 0 ]; then
-            echo "✅ All links are valid"
+            echo "=========== All links are valid ==========="
             exit 0
         fi
         
-        echo "❌ Found broken links"
-        echo
-        echo "===== DETAILS ====="
-        
+        echo "=========== Found broken links ==========="        
         # Output error details
         for i in "${!files[@]}"; do
             filename="${files[$i]}"
