@@ -33,66 +33,48 @@ runs:
         # Initialize variables
         has_errors=0
         current_file=""
-        files=()
-        all_links=()
-        in_file_section=0
-        in_error_block=0
-        current_error=""
+        file_summaries=()
+        in_summary_section=0
+        current_summary=""
         
         # Process output line by line
         while IFS= read -r line; do
             # Detect file header lines
             if [[ "$line" =~ ^FILE:[[:space:]]*(.+) ]]; then
-                current_file="${BASH_REMATCH[1]}"
-                files+=("$current_file")
-                in_file_section=1
-                in_error_block=0
-            
-            # Skip summary lines that come after the actual link checks
-            elif [[ "$line" =~ ^[[:space:]]*[0-9]+[[:space:]]*links[[:space:]]*checked\. ]] ||
-                [[ "$line" =~ ^[[:space:]]*ERROR:[[:space:]]* ]] ||
-                [[ "$line" =~ ^[[:space:]]*\[✖\]\ [^[:space:]]+\ →\ Status:\ [0-9]+[[:space:]]*$ ]]; then
-                # Skip these summary lines
-                in_error_block=0
-                continue
-            
-            # Detect broken link lines - extract URL and status code
-            elif [[ "$line" =~ ^[[:space:]]*\[✖\]\ ([^[:space:]]+).*Status:\ ([0-9]+)(.*)$ ]]; then
-                url="${BASH_REMATCH[1]}"
-                status="${BASH_REMATCH[2]}"
-                error_start="${BASH_REMATCH[3]}"
-                
-                # Only process if we're in a file section
-                if [ -n "$current_file" ] && [ $in_file_section -eq 1 ]; then
-                    # Start a new error block
-                    in_error_block=1
-                    current_error=$(echo "$error_start" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+                # Save previous file summary
+                if [ -n "$current_file" ] && [ -n "$current_summary" ]; then
+                    file_summaries+=("$current_file|$current_summary")
+                    current_summary=""
                 fi
+                
+                current_file="${BASH_REMATCH[1]}"
+                in_summary_section=0
             
-            # Capture multi-line error messages
-            elif [ $in_error_block -eq 1 ] && [[ "$line" =~ ^[[:space:]]+ ]]; then
-                # Append to current error message
-                current_error+="\n$line"
+            # Detect start of summary section (after "n links checked.")
+            elif [[ "$line" =~ ^[[:space:]]*[0-9]+[[:space:]]*links[[:space:]]*checked\. ]]; then
+                in_summary_section=1
+                current_summary="$line"
             
-            # End of error block
-            elif [ $in_error_block -eq 1 ]; then
-                # Add to links array (format: file|url|status|error)
-                all_links+=("${current_file}|${url}|${status}|${current_error}")
-                has_errors=1
-                in_error_block=0
-                current_error=""
-            
-            # Reset file section flag when we hit a blank line
-            elif [[ -z "$line" ]]; then
-                in_file_section=0
-                in_error_block=0
+            # Collect summary content
+            elif [ $in_summary_section -eq 1 ]; then
+                # Skip empty lines at the start of summary
+                if [[ -z "$line" && -z "$current_summary" ]]; then
+                    continue
+                fi
+                
+                # Add to current summary
+                current_summary+="\n$line"
+                
+                # Check if this line indicates an error
+                if [[ "$line" =~ ERROR: ]] || [[ "$line" =~ \[✖\] ]]; then
+                    has_errors=1
+                fi
             fi
         done <<< "$MLC_OUTPUT"
         
-        # Capture any remaining error block at end of input
-        if [ $in_error_block -eq 1 ]; then
-            all_links+=("${current_file}|${url}|${status}|${current_error}")
-            has_errors=1
+        # Save last file summary
+        if [ -n "$current_file" ] && [ -n "$current_summary" ]; then
+            file_summaries+=("$current_file|$current_summary")
         fi
         
         # Output final conclusion
@@ -105,42 +87,18 @@ runs:
         echo
         echo "===== DETAILS ====="
         
-        # Remove duplicate files
-        unique_files=($(printf "%s\n" "${files[@]}" | sort -u))
-        
-        # Remove duplicate links
-        unique_links=($(printf "%s\n" "${all_links[@]}" | sort -u))
-        
         # Output error details
-        for file in "${unique_files[@]}"; do
-            file_links=()
-            for link in "${unique_links[@]}"; do
-                if [[ "$link" == "${file}|"* ]]; then
-                    # Extract link info (remove filename prefix)
-                    link_only="${link#*|}"
-                    file_links+=("$link_only")
-                fi
-            done
+        for entry in "${file_summaries[@]}"; do
+            # Split into filename and summary
+            IFS='|' read -r filename summary <<< "$entry"
             
-            # Output if file has broken links
-            if [ ${#file_links[@]} -gt 0 ]; then
-                echo "File: $file"
-                
-                # Output each broken link with details
-                for link_info in "${file_links[@]}"; do
-                    # Split link info into components
-                    IFS='|' read -r url status error_msg <<< "$link_info"
-                    
-                    # Format output with error message
-                    echo "  $url (Status: $status)"
-                    # Preserve newlines in error message
-                    printf "  %s\n" "$error_msg" | while IFS= read -r err_line; do
-                        echo "    $err_line"
-                    done
+            # Only show summaries that contain errors
+            if [[ "$summary" =~ ERROR: ]] || [[ "$summary" =~ \[✖\] ]]; then
+                echo "File: $filename"
+                # Preserve newlines in summary
+                printf "%s\n" "$summary" | while IFS= read -r s_line; do
+                    echo "  $s_line"
                 done
-                
-                # Add link count
-                echo "  → Found ${#file_links[@]} broken link(s)"
                 echo
             fi
         done
