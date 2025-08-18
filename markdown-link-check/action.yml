@@ -35,47 +35,41 @@ runs:
         current_file=""
         file_summaries=()
         in_summary_section=0
-        current_summary=""
         
         # Process output line by line
         while IFS= read -r line; do
             # Detect file header lines
             if [[ "$line" =~ ^FILE:[[:space:]]*(.+) ]]; then
                 # Save previous file summary
-                if [ -n "$current_file" ] && [ -n "$current_summary" ]; then
-                    file_summaries+=("$current_file|$current_summary")
-                    current_summary=""
+                if [ -n "$current_file" ] && [ $in_summary_section -eq 1 ]; then
+                    file_summaries+=("$current_file")
+                    in_summary_section=0
                 fi
                 
                 current_file="${BASH_REMATCH[1]}"
-                in_summary_section=0
             
             # Detect start of summary section (after "n links checked.")
             elif [[ "$line" =~ ^[[:space:]]*[0-9]+[[:space:]]*links[[:space:]]*checked\. ]]; then
                 in_summary_section=1
-                current_summary="$line"
+                # Start new summary for this file
+                file_summaries+=("$current_file")
+                file_summaries+=("$line")
             
             # Collect summary content
             elif [ $in_summary_section -eq 1 ]; then
-                # Skip empty lines at the start of summary
-                if [[ -z "$line" && -z "$current_summary" ]]; then
-                    continue
-                fi
-                
                 # Add to current summary
-                current_summary+="\n$line"
+                file_summaries+=("$line")
                 
                 # Check if this line indicates an error
                 if [[ "$line" =~ ERROR: ]] || [[ "$line" =~ \[✖\] ]]; then
                     has_errors=1
                 fi
+            
+            # Reset summary section flag when we hit a blank line or new file
+            elif [[ -z "$line" ]] || [[ "$line" =~ ^FILE: ]]; then
+                in_summary_section=0
             fi
         done <<< "$MLC_OUTPUT"
-        
-        # Save last file summary
-        if [ -n "$current_file" ] && [ -n "$current_summary" ]; then
-            file_summaries+=("$current_file|$current_summary")
-        fi
         
         # Output final conclusion
         if [ $has_errors -eq 0 ]; then
@@ -88,17 +82,23 @@ runs:
         echo "===== DETAILS ====="
         
         # Output error details
-        for entry in "${file_summaries[@]}"; do
-            # Split into filename and summary
-            IFS='|' read -r filename summary <<< "$entry"
+        current_filename=""
+        for line in "${file_summaries[@]}"; do
+            # If line is a filename
+            if [[ "$line" =~ ^FILE: ]]; then
+                current_filename="${line#FILE: }"
+                continue
+            fi
             
             # Only show summaries that contain errors
-            if [[ "$summary" =~ ERROR: ]] || [[ "$summary" =~ \[✖\] ]]; then
-                echo "File: $filename"
-                # Preserve newlines in summary
-                printf "%s\n" "$summary" | while IFS= read -r s_line; do
-                    echo "  $s_line"
-                done
-                echo
+            if [[ "$line" =~ ERROR: ]] || [[ "$line" =~ \[✖\] ]]; then
+                # Print filename if it's the start of a summary block
+                if [ -n "$current_filename" ]; then
+                    echo "File: $current_filename"
+                    current_filename=""
+                fi
+                
+                # Print the line with proper indentation
+                echo "  $line"
             fi
         done
