@@ -32,20 +32,13 @@ runs:
       run: |
         has_errors=0
         current_file=""
-        declare -A broken_links_map
-        declare -A current_file_links
+        files=()
+        all_links=()
         
         while IFS= read -r line; do
             if [[ "$line" =~ ^FILE:[[:space:]]*(.+) ]]; then
-                if [ -n "$current_file" ]; then
-                    if [ ${#current_file_links[@]} -gt 0 ]; then
-                        broken_links_map[$current_file]="${current_file_links[*]}"
-                    fi
-                fi
-                
                 current_file="${BASH_REMATCH[1]}"
-                unset current_file_links
-                declare -A current_file_links
+                files+=("$current_file")
             
             elif [[ "$line" =~ ^[[:space:]]*\[✖\]\ ([^[:space:]]+).*Status:\ ([0-9]+) ]]; then
                 url="${BASH_REMATCH[1]}"
@@ -53,26 +46,41 @@ runs:
                 link_str="$url (Status: $status)"
                 
                 if [ -n "$current_file" ]; then
-                    current_file_links["$link_str"]=1
+                    all_links+=("${current_file}|${link_str}")
                     has_errors=1
                 fi
             fi
         done <<< "$MLC_OUTPUT"
         
-        if [ -n "$current_file" ] && [ ${#current_file_links[@]} -gt 0 ]; then
-            broken_links_map[$current_file]="${!current_file_links[*]}"
+        # 输出结论
+        if [ $has_errors -eq 0 ]; then
+            echo "All links are valid"
+            exit 0
         fi
         
-        if [ $has_errors -eq 0 ]; then
-            echo "=========== All links are valid ==========="
-        else
-            echo "=========== Found broken links ==========="
-            
-            for file in "${!broken_links_map[@]}"; do
-                IFS=' ' read -ra links <<< "${broken_links_map[$file]}"
-                
-                echo "File: $file"
-                printf "  %s\n" "${links[@]}" | sort
-                echo
+        echo "Found broken links"
+        echo
+        echo "===== DETAILS ====="
+        
+        unique_files=($(printf "%s\n" "${files[@]}" | sort -u))
+        
+        unique_links=($(printf "%s\n" "${all_links[@]}" | sort -u))
+        
+        for file in "${unique_files[@]}"; do
+            file_links=()
+            for link in "${unique_links[@]}"; do
+                if [[ "$link" == "${file}|"* ]]; then
+                    link_only="${link#*|}"
+                    file_links+=("$link_only")
+                fi
             done
-        fi
+            
+            if [ ${#file_links[@]} -gt 0 ]; then
+                echo "File: $file"
+                
+                printf "  %s\n" "${file_links[@]}" | sort -u
+                
+                echo "  → Found ${#file_links[@]} broken link(s)"
+                echo
+            fi
+        done
