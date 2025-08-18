@@ -30,44 +30,38 @@ runs:
       shell: bash
       if: always()
       run: |
-        # Initialize variables
         has_errors=0
         current_file=""
-        file_summaries=()
+        files=()
+        summaries=()
         in_summary_section=0
         
         # Process output line by line
         while IFS= read -r line; do
             # Detect file header lines
             if [[ "$line" =~ ^FILE:[[:space:]]*(.+) ]]; then
-                # Save previous file summary
-                if [ -n "$current_file" ] && [ $in_summary_section -eq 1 ]; then
-                    file_summaries+=("$current_file")
-                    in_summary_section=0
-                fi
-                
                 current_file="${BASH_REMATCH[1]}"
+                in_summary_section=0
             
             # Detect start of summary section (after "n links checked.")
             elif [[ "$line" =~ ^[[:space:]]*[0-9]+[[:space:]]*links[[:space:]]*checked\. ]]; then
-                in_summary_section=1
-                # Start new summary for this file
-                file_summaries+=("$current_file")
-                file_summaries+=("$line")
+                if [ -n "$current_file" ]; then
+                    in_summary_section=1
+                    # Start new summary for this file
+                    files+=("$current_file")
+                    summaries+=("$line")
+                fi
             
             # Collect summary content
-            elif [ $in_summary_section -eq 1 ]; then
+            elif [ $in_summary_section -eq 1 ] && [ -n "$current_file" ]; then
                 # Add to current summary
-                file_summaries+=("$line")
+                last_index=$((${#summaries[@]} - 1))
+                summaries[$last_index]+=$'\n'"$line"
                 
                 # Check if this line indicates an error
                 if [[ "$line" =~ ERROR: ]] || [[ "$line" =~ \[✖\] ]]; then
                     has_errors=1
                 fi
-            
-            # Reset summary section flag when we hit a blank line or new file
-            elif [[ -z "$line" ]] || [[ "$line" =~ ^FILE: ]]; then
-                in_summary_section=0
             fi
         done <<< "$MLC_OUTPUT"
         
@@ -82,23 +76,17 @@ runs:
         echo "===== DETAILS ====="
         
         # Output error details
-        current_filename=""
-        for line in "${file_summaries[@]}"; do
-            # If line is a filename
-            if [[ "$line" =~ ^FILE: ]]; then
-                current_filename="${line#FILE: }"
-                continue
-            fi
+        for i in "${!files[@]}"; do
+            filename="${files[$i]}"
+            summary="${summaries[$i]}"
             
             # Only show summaries that contain errors
-            if [[ "$line" =~ ERROR: ]] || [[ "$line" =~ \[✖\] ]]; then
-                # Print filename if it's the start of a summary block
-                if [ -n "$current_filename" ]; then
-                    echo "File: $current_filename"
-                    current_filename=""
-                fi
-                
-                # Print the line with proper indentation
-                echo "  $line"
+            if [[ "$summary" =~ ERROR: ]] || [[ "$summary" =~ \[✖\] ]]; then
+                echo "File: $filename"
+                # Preserve newlines in summary
+                while IFS= read -r s_line; do
+                    echo "  $s_line"
+                done <<< "$summary"
+                echo  # Add empty line between files
             fi
         done
