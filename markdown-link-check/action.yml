@@ -35,6 +35,7 @@ runs:
         current_file=""
         files=()
         all_links=()
+        in_file_section=0
         
         # Process output line by line
         while IFS= read -r line; do
@@ -42,6 +43,14 @@ runs:
             if [[ "$line" =~ ^FILE:[[:space:]]*(.+) ]]; then
                 current_file="${BASH_REMATCH[1]}"
                 files+=("$current_file")
+                in_file_section=1
+            
+            # Skip summary lines that come after the actual link checks
+            elif [[ "$line" =~ ^[[:space:]]*[0-9]+[[:space:]]*links[[:space:]]*checked\. ]] ||
+                [[ "$line" =~ ^[[:space:]]*ERROR:[[:space:]]* ]] ||
+                [[ "$line" =~ ^[[:space:]]*\[✖\]\ [^[:space:]]+\ →\ Status:\ [0-9]+[[:space:]]*$ ]]; then
+                # Skip these summary lines
+                continue
             
             # Detect broken link lines - extract URL, status code, and error message
             elif [[ "$line" =~ ^[[:space:]]*\[✖\]\ ([^[:space:]]+).*Status:\ ([0-9]+)(.*)$ ]]; then
@@ -49,14 +58,19 @@ runs:
                 status="${BASH_REMATCH[2]}"
                 error_msg="${BASH_REMATCH[3]}"
                 
-                # Clean up error message (trim leading/trailing whitespace)
-                error_msg=$(echo "$error_msg" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-                
-                # Add to links array (format: file|url|status|error)
-                if [ -n "$current_file" ]; then
+                # Only process if we're in a file section
+                if [ -n "$current_file" ] && [ $in_file_section -eq 1 ]; then
+                    # Clean up error message (trim leading/trailing whitespace)
+                    error_msg=$(echo "$error_msg" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+                    
+                    # Add to links array (format: file|url|status|error)
                     all_links+=("${current_file}|${url}|${status}|${error_msg}")
                     has_errors=1
                 fi
+            
+            # Reset file section flag when we hit a blank line
+            elif [[ -z "$line" ]]; then
+                in_file_section=0
             fi
         done <<< "$MLC_OUTPUT"
         
