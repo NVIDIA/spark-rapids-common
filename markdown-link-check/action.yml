@@ -36,6 +36,8 @@ runs:
         files=()
         all_links=()
         in_file_section=0
+        in_error_block=0
+        current_error=""
         
         # Process output line by line
         while IFS= read -r line; do
@@ -44,35 +46,54 @@ runs:
                 current_file="${BASH_REMATCH[1]}"
                 files+=("$current_file")
                 in_file_section=1
+                in_error_block=0
             
             # Skip summary lines that come after the actual link checks
             elif [[ "$line" =~ ^[[:space:]]*[0-9]+[[:space:]]*links[[:space:]]*checked\. ]] ||
                 [[ "$line" =~ ^[[:space:]]*ERROR:[[:space:]]* ]] ||
                 [[ "$line" =~ ^[[:space:]]*\[✖\]\ [^[:space:]]+\ →\ Status:\ [0-9]+[[:space:]]*$ ]]; then
                 # Skip these summary lines
+                in_error_block=0
                 continue
             
-            # Detect broken link lines - extract URL, status code, and error message
+            # Detect broken link lines - extract URL and status code
             elif [[ "$line" =~ ^[[:space:]]*\[✖\]\ ([^[:space:]]+).*Status:\ ([0-9]+)(.*)$ ]]; then
                 url="${BASH_REMATCH[1]}"
                 status="${BASH_REMATCH[2]}"
-                error_msg="${BASH_REMATCH[3]}"
+                error_start="${BASH_REMATCH[3]}"
                 
                 # Only process if we're in a file section
                 if [ -n "$current_file" ] && [ $in_file_section -eq 1 ]; then
-                    # Clean up error message (trim leading/trailing whitespace)
-                    error_msg=$(echo "$error_msg" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-                    
-                    # Add to links array (format: file|url|status|error)
-                    all_links+=("${current_file}|${url}|${status}|${error_msg}")
-                    has_errors=1
+                    # Start a new error block
+                    in_error_block=1
+                    current_error=$(echo "$error_start" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
                 fi
+            
+            # Capture multi-line error messages
+            elif [ $in_error_block -eq 1 ] && [[ "$line" =~ ^[[:space:]]+ ]]; then
+                # Append to current error message
+                current_error+="\n$line"
+            
+            # End of error block
+            elif [ $in_error_block -eq 1 ]; then
+                # Add to links array (format: file|url|status|error)
+                all_links+=("${current_file}|${url}|${status}|${current_error}")
+                has_errors=1
+                in_error_block=0
+                current_error=""
             
             # Reset file section flag when we hit a blank line
             elif [[ -z "$line" ]]; then
                 in_file_section=0
+                in_error_block=0
             fi
         done <<< "$MLC_OUTPUT"
+        
+        # Capture any remaining error block at end of input
+        if [ $in_error_block -eq 1 ]; then
+            all_links+=("${current_file}|${url}|${status}|${current_error}")
+            has_errors=1
+        fi
         
         # Output final conclusion
         if [ $has_errors -eq 0 ]; then
@@ -110,12 +131,12 @@ runs:
                     # Split link info into components
                     IFS='|' read -r url status error_msg <<< "$link_info"
                     
-                    # Format output with error message if present
-                    if [ -n "$error_msg" ]; then
-                        echo "  $url (Status: $status): $error_msg"
-                    else
-                        echo "  $url (Status: $status)"
-                    fi
+                    # Format output with error message
+                    echo "  $url (Status: $status)"
+                    # Preserve newlines in error message
+                    printf "  %s\n" "$error_msg" | while IFS= read -r err_line; do
+                        echo "    $err_line"
+                    done
                 done
                 
                 # Add link count
