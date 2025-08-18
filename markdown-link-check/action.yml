@@ -32,40 +32,33 @@ runs:
       run: |
         has_errors=0
         current_file=""
-        broken_links=()
-        
-        function print_broken_links() {
-          if [ ${#broken_links[@]} -gt 0 ]; then
-            has_errors=1
-            echo "File: $current_file"
-            for link_info in "${broken_links[@]}"; do
-              echo "  Broken link: $link_info"
-            done
-            echo ""
-          fi
-          broken_links=()
-        }
+        declare -A broken_links_map
         
         while IFS= read -r line; do
-          if [[ "$line" =~ ^FILE:[[:space:]]*(.+) ]]; then
-            if [ -n "$current_file" ]; then
-              print_broken_links
+            if [[ "$line" =~ ^FILE:[[:space:]]*(.+) ]]; then
+                current_file="${BASH_REMATCH[1]}"
+                broken_links_map[$current_file]=""
+            
+            elif [[ "$line" =~ ^[[:space:]]*\[✖\]\ ([^[:space:]]+).*Status:\ ([0-9]+) ]]; then
+                url="${BASH_REMATCH[1]}"
+                status="${BASH_REMATCH[2]}"
+                if [ -n "$current_file" ]; then
+                    broken_links_map[$current_file]+="  $url (Status: $status)"$'\n'
+                    has_errors=1
+                fi
             fi
-            current_file="${BASH_REMATCH[1]}"
-          
-          elif [[ "$line" =~ ^[[:space:]]*\[✖\]\ ([^[:space:]]+).*Status:\ ([0-9]+) ]]; then
-            url="${BASH_REMATCH[1]}"
-            status="${BASH_REMATCH[2]}"
-            broken_links+=("$url (Status: $status)")
-          fi
         done <<< "$MLC_OUTPUT"
         
-        if [ -n "$current_file" ]; then
-          print_broken_links
-        fi
-        
         if [ $has_errors -eq 0 ]; then
-          echo "✅ All links are valid"
-        else
-          echo "❌ Found broken links in the above files"
+            echo "=========== All links are valid ==========="
+        else            
+            echo "=========== Found errors: ==========="
+            
+            for file in "${!broken_links_map[@]}"; do
+                links="${broken_links_map[$file]}"
+                if [ -n "$links" ]; then
+                    echo "File: $file"
+                    echo "$links"
+                fi
+            done
         fi
