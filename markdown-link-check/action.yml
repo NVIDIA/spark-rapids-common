@@ -33,32 +33,46 @@ runs:
         has_errors=0
         current_file=""
         declare -A broken_links_map
+        declare -A current_file_links
         
         while IFS= read -r line; do
             if [[ "$line" =~ ^FILE:[[:space:]]*(.+) ]]; then
+                if [ -n "$current_file" ]; then
+                    if [ ${#current_file_links[@]} -gt 0 ]; then
+                        broken_links_map[$current_file]="${current_file_links[*]}"
+                    fi
+                fi
+                
                 current_file="${BASH_REMATCH[1]}"
-                broken_links_map[$current_file]=""
+                unset current_file_links
+                declare -A current_file_links
             
             elif [[ "$line" =~ ^[[:space:]]*\[✖\]\ ([^[:space:]]+).*Status:\ ([0-9]+) ]]; then
                 url="${BASH_REMATCH[1]}"
                 status="${BASH_REMATCH[2]}"
+                link_str="$url (Status: $status)"
+                
                 if [ -n "$current_file" ]; then
-                    broken_links_map[$current_file]+="  $url (Status: $status)"$'\n'
+                    current_file_links["$link_str"]=1
                     has_errors=1
                 fi
             fi
         done <<< "$MLC_OUTPUT"
         
+        if [ -n "$current_file" ] && [ ${#current_file_links[@]} -gt 0 ]; then
+            broken_links_map[$current_file]="${!current_file_links[*]}"
+        fi
+        
         if [ $has_errors -eq 0 ]; then
             echo "=========== All links are valid ==========="
-        else            
-            echo "=========== Found errors: ==========="
+        else
+            echo "=========== Found broken links ==========="
             
             for file in "${!broken_links_map[@]}"; do
-                links="${broken_links_map[$file]}"
-                if [ -n "$links" ]; then
-                    echo "File: $file"
-                    echo "$links"
-                fi
+                IFS=' ' read -ra links <<< "${broken_links_map[$file]}"
+                
+                echo "File: $file"
+                printf "  %s\n" "${links[@]}" | sort
+                echo
             done
         fi
