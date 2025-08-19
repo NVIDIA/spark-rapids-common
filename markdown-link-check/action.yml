@@ -15,6 +15,38 @@
 name: 'Markdown Link Check'
 description: 'Check markdown links'
 
+inputs:
+  use-quiet-mode:
+    description: 'Specify yes to only show errors in output'
+    required: false
+    default: 'no'
+  use-verbose-mode:
+    description: 'Specify yes to show detailed HTTP status for checked links'
+    required: false
+    default: 'yes'
+  config-file:
+    description: 'Path to custom configuration file (relative to repository root)'
+    required: false
+  folder-path:
+    description: 'Comma-separated folders to check (default: entire repository)'
+    required: false
+  max-depth:
+    description: 'Directory traversal depth (-1 for unlimited)'
+    required: false
+    default: -1
+  check-modified-files-only:
+    description: 'Only check modified markdown files in PRs'
+    required: false
+  base-branch:
+    description: 'Comparison branch for modified files check'
+    required: false
+  file-extension:
+    description: 'File extension to check'
+    required: false
+  file-path:
+    description: 'Comma-separated specific files to check'
+    required: false
+
 runs:
   using: "composite"
   steps:
@@ -22,9 +54,15 @@ runs:
       id: markdown-link-check
       uses: tcort/github-action-markdown-link-check@v1
       with:
-        max-depth: -1
-        use-verbose-mode: 'yes'
-        base-branch: 'gh-pages'
+        use-quiet-mode: ${{ inputs.use-quiet-mode }}
+        use-verbose-mode: ${{ inputs.use-verbose-mode }}
+        config-file: ${{ inputs.config-file }}
+        folder: ${{ inputs.folder-path }}
+        max-depth: ${{ inputs.max-depth }}
+        check-modified-files-only: ${{ inputs.check-modified-files-only }}
+        base-branch: ${{ inputs.base-branch }}
+        file-extension: ${{ inputs.file-extension }}
+        file-path: ${{ inputs.file-path }}
     
     - name: Summarize results
       shell: bash
