@@ -30,6 +30,8 @@ runs:
       shell: bash
       if: always()
       run: |
+        set -e
+        
         has_errors=0
         current_file=""
         files=()
