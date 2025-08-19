@@ -57,7 +57,7 @@ runs:
         use-quiet-mode: ${{ inputs.use-quiet-mode }}
         use-verbose-mode: ${{ inputs.use-verbose-mode }}
         config-file: ${{ inputs.config-file }}
-        folder: ${{ inputs.folder-path }}
+        folder-path: ${{ inputs.folder-path }}
         max-depth: ${{ inputs.max-depth }}
         check-modified-files-only: ${{ inputs.check-modified-files-only }}
         base-branch: ${{ inputs.base-branch }}
