@@ -30,6 +30,7 @@ runs:
       shell: bash
       if: always()
       run: |
+        echo "Summarizing markdown link check results"
         set -e
         
         has_errors=0
