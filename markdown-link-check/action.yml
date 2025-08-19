@@ -1,0 +1,92 @@
+# Copyright (c) 2025, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: 'Markdown Link Check'
+description: 'Check markdown links'
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run markdown link check
+      id: markdown-link-check
+      uses: tcort/github-action-markdown-link-check@v1
+      with:
+        max-depth: -1
+        use-verbose-mode: 'yes'
+        base-branch: 'gh-pages'
+    
+    - name: Summarize results
+      shell: bash
+      if: always()
+      run: |
+        echo "Summarizing markdown link check results"
+        set -e
+        
+        has_errors=0
+        current_file=""
+        files=()
+        summaries=()
+        in_summary_section=0 # 0: not in summary section, 1: in summary section
+        
+        # Process output line by line
+        while IFS= read -r line; do
+            # Detect file header lines
+            if [[ "$line" =~ ^FILE:[[:space:]]*(.+) ]]; then
+                current_file="${BASH_REMATCH[1]}"
+                in_summary_section=0
+            
+            # Detect start of summary section (after "n links checked.")
+            elif [[ "$line" =~ ^[[:space:]]*[0-9]+[[:space:]]*links[[:space:]]*checked\. ]]; then
+                if [ -n "$current_file" ]; then
+                    in_summary_section=1
+                    # Start new summary for this file
+                    files+=("$current_file")
+                    summaries+=("Details:")
+                fi
+            
+            # Collect summary content
+            elif [ $in_summary_section -eq 1 ] && [ -n "$current_file" ]; then
+                # Add to current summary
+                last_index=$((${#summaries[@]} - 1))
+                summaries[$last_index]+=$'\n'"$line"
+                
+                # Check if this line indicates an error
+                if [[ "$line" =~ ERROR: ]] || [[ "$line" =~ \[✖\] ]]; then
+                    has_errors=1
+                fi
+            fi
+        done <<< "$MLC_OUTPUT" # The output of the markdown link check action
+        
+        # Output final conclusion
+        if [ $has_errors -eq 0 ]; then
+            echo "=========== All links are valid ==========="
+            exit 0
+        fi
+        
+        echo "=========== Found error links ==========="        
+        # Output error details
+        for i in "${!files[@]}"; do
+            filename="${files[$i]}"
+            summary="${summaries[$i]}"
+            
+            # Only output summaries that contain errors
+            if [[ "$summary" =~ ERROR: ]] || [[ "$summary" =~ \[✖\] ]]; then
+                echo "File: $filename"
+                # Preserve newlines in summary
+                while IFS= read -r s_line; do
+                    echo "  $s_line"
+                done <<< "$summary"
+                echo  # Add empty line between files
+            fi
+        done
