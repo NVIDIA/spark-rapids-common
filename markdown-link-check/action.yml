@@ -34,7 +34,7 @@ runs:
         current_file=""
         files=()
         summaries=()
-        in_summary_section=0
+        in_summary_section=0 # 0: not in summary section, 1: in summary section
         
         # Process output line by line
         while IFS= read -r line; do
@@ -63,7 +63,7 @@ runs:
                     has_errors=1
                 fi
             fi
-        done <<< "$MLC_OUTPUT" # This is the output of the markdown link check action
+        done <<< "$MLC_OUTPUT" # The output of the markdown link check action
         
         # Output final conclusion
         if [ $has_errors -eq 0 ]; then
@@ -71,13 +71,13 @@ runs:
             exit 0
         fi
         
-        echo "=========== Found broken links ==========="        
+        echo "=========== Found error links ==========="        
         # Output error details
         for i in "${!files[@]}"; do
             filename="${files[$i]}"
             summary="${summaries[$i]}"
             
-            # Only show summaries that contain errors
+            # Only output summaries that contain errors
             if [[ "$summary" =~ ERROR: ]] || [[ "$summary" =~ \[✖\] ]]; then
                 echo "File: $filename"
                 # Preserve newlines in summary
