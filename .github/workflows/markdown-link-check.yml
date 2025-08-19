@@ -30,3 +30,6 @@ jobs:
 
       - name: Run Markdown Link Check
         uses: NVIDIA/spark-rapids-common/markdown-link-check@main
+        with:
+          max-depth: -1
+          use-verbose-mode: 'yes'
