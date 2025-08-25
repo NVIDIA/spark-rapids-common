@@ -52,7 +52,7 @@ runs:
   steps:
     - name: Run markdown link check
       id: markdown-link-check
-      uses: tcort/github-action-markdown-link-check@v1
+      uses: tcort/github-action-markdown-link-check@a800ad5f1c35bf61987946fd31c15726a1c9f2ba
       with:
         use-quiet-mode: ${{ inputs.use-quiet-mode }}
         use-verbose-mode: ${{ inputs.use-verbose-mode }}
