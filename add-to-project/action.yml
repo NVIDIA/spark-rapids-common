@@ -1,4 +1,4 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.
+# Copyright (c) 2025-2026, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,12 +19,53 @@ inputs:
     description: "GitHub token"
     required: true
     type: string
+  project-url:
+    description: "GitHub project URL"
+    required: false
+    default: 'https://github.com/orgs/NVIDIA/projects/4'
 
 runs:
   using: "composite"
   steps:
     - name: Adding to project
-      uses: actions/add-to-project@v1.0.2
+      uses: actions/github-script@v8
+      env:
+        PROJECT_URL: ${{ inputs.project-url }}
       with:
-        project-url: https://github.com/orgs/NVIDIA/projects/4
         github-token: ${{ inputs.token }}
+        script: |
+          const projectUrl = process.env.PROJECT_URL;
+          const match = projectUrl.match(/\/(?<ownerType>orgs|users)\/(?<ownerName>[^/]+)\/projects\/(?<projectNumber>\d+)/);
+          if (!match) {
+            core.setFailed(`Invalid project URL: ${projectUrl}`);
+            return;
+          }
+          const { ownerType, ownerName, projectNumber } = match.groups;
+
+          // Get the project node ID
+          const ownerField = ownerType === 'orgs' ? 'organization' : 'user';
+          const { [ownerField]: owner } = await github.graphql(`
+            query($ownerName: String!, $projectNumber: Int!) {
+              ${ownerField}(login: $ownerName) {
+                projectV2(number: $projectNumber) { id }
+              }
+            }
+          `, { ownerName, projectNumber: parseInt(projectNumber) });
+          const projectId = owner.projectV2.id;
+
+          // Get the content node ID (issue or pull request)
+          const contentId = context.payload.issue?.node_id || context.payload.pull_request?.node_id;
+          if (!contentId) {
+            core.setFailed('No issue or pull request found in event payload.');
+            return;
+          }
+
+          await github.graphql(`
+            mutation($projectId: ID!, $contentId: ID!) {
+              addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                item { id }
+              }
+            }
+          `, { projectId, contentId });
+
+          core.info(`Added to project ${projectUrl}`);

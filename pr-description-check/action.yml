@@ -28,7 +28,7 @@ runs:
   using: "composite"
   steps:
     - name: Check PR description and checklist
-      uses: actions/github-script@v7
+      uses: actions/github-script@v8
       env:
         TEMPLATE_PATH: ${{ inputs.template-path }}
       with:
