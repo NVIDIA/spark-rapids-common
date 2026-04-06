@@ -25,13 +25,13 @@ import re
 import sys
 from argparse import ArgumentParser
 
-from github import Github
+from github import Auth, Github
 
 SIGNOFF_REGEX = re.compile('Signed-off-by:')
 
 
 def signoff(token: str, owner: str, repo_name: str, pull_number: int):
-    gh = Github(token, per_page=100, user_agent='signoff-check', verify=True)
+    gh = Github(auth=Auth.Token(token), per_page=100, user_agent='signoff-check', verify=True)
     pr = gh.get_repo(f"{owner}/{repo_name}").get_pull(pull_number)
     for c in pr.get_commits():
         if SIGNOFF_REGEX.search(c.commit.message):
