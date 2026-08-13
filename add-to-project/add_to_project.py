@@ -280,7 +280,7 @@ def read_target_pom(client, repository, item):
     return base_ref, base_sha, pom_xml
 
 
-def populate_roadmap(client, repository, pull_request, project, item):
+def populate_roadmap(client, repository, project, item):
     field = project.get("field")
     if not isinstance(field, dict) or field.get("__typename") != (
         "ProjectV2SingleSelectField"
@@ -331,7 +331,7 @@ def run(client, event, project_url, repository):
     pull_request = event.get("pull_request")
     if pull_request and repository in ROADMAP_REPOSITORIES:
         try:
-            populate_roadmap(client, repository, pull_request, project, item)
+            populate_roadmap(client, repository, project, item)
         except AutomationError as error:
             number = pull_request.get("number", "unknown")
             raise AutomationError(
