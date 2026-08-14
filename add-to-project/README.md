@@ -1,12 +1,10 @@
 # add-to-project
 
-This composite action adds new issues and pull requests to the project. For
-merged pull requests in cudf-spark and cudf-spark-jni, it also sets an empty
-Roadmap field from the target branch root `pom.xml`.
+This composite action to add new issue and pull request to the project.
 
 ## Inputs
 
-- `token` (required): GitHub token with project write and repository read access
+- `token` (required): GitHub token that has write access to the project
 
 ## Usage
 
