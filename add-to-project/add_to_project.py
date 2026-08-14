@@ -147,7 +147,7 @@ def extract_project_version(pom_xml):
     return match.group(1)
 
 
-def get_project(client, project_url):
+def get_project(client, project_url, content_id):
     match = re.fullmatch(
         r"https://github\.com/(?P<kind>orgs|users)/(?P<login>[^/]+)/"
         r"projects/(?P<number>\d+)/?",
@@ -158,7 +158,9 @@ def get_project(client, project_url):
     owner = "organization" if match["kind"] == "orgs" else "user"
     data = client.graphql(
         f"""
-        query Project($login: String!, $number: Int!, $field: String!) {{
+        query Project(
+          $login: String!, $number: Int!, $field: String!, $content: ID!
+        ) {{
           {owner}(login: $login) {{
             projectV2(number: $number) {{
               id
@@ -171,18 +173,68 @@ def get_project(client, project_url):
               }}
             }}
           }}
+          content: node(id: $content) {{
+            __typename
+            ... on Issue {{
+              projectItems(first: 100, includeArchived: true) {{
+                nodes {{ ...ProjectItem }}
+                pageInfo {{ hasNextPage }}
+              }}
+            }}
+            ... on PullRequest {{
+              projectItems(first: 100, includeArchived: true) {{
+                nodes {{ ...ProjectItem }}
+                pageInfo {{ hasNextPage }}
+              }}
+            }}
+          }}
+        }}
+        fragment ProjectItem on ProjectV2Item {{
+          id
+          project {{ id }}
+          fieldValueByName(name: $field) {{
+            ... on ProjectV2ItemFieldSingleSelectValue {{ name }}
+          }}
         }}
         """,
         {
             "login": match["login"],
             "number": int(match["number"]),
             "field": "Roadmap",
+            "content": content_id,
         },
     )
     project = dig(data, owner, "projectV2")
     if not isinstance(project, dict) or not project.get("id"):
         raise AutomationError(f"Project not found: {project_url}")
-    return project
+
+    content = data.get("content")
+    if not isinstance(content, dict) or content.get("__typename") not in (
+        "Issue",
+        "PullRequest",
+    ):
+        raise AutomationError("GitHub did not return the issue or pull request.")
+    project_items = content.get("projectItems")
+    nodes = project_items.get("nodes") if isinstance(project_items, dict) else None
+    has_next_page = dig(project_items, "pageInfo", "hasNextPage")
+    if not isinstance(nodes, list) or not isinstance(has_next_page, bool):
+        raise AutomationError("GitHub did not return the content's project items.")
+
+    matches = [
+        item
+        for item in nodes
+        if isinstance(item, dict) and dig(item, "project", "id") == project["id"]
+    ]
+    if len(matches) > 1:
+        raise AutomationError("The content has multiple items in the project.")
+    if matches and not matches[0].get("id"):
+        raise AutomationError("The existing project item ID is missing.")
+    if not matches and has_next_page:
+        raise AutomationError(
+            "The content belongs to more than 100 projects; its item could not be "
+            "identified safely."
+        )
+    return project, matches[0] if matches else None
 
 
 def add_project_item(client, project_id, content_id):
@@ -320,13 +372,24 @@ def populate_roadmap(client, repository, project, item, pull_request):
 
 
 def run(client, event, project_url, repository):
-    project = get_project(client, project_url)
     content = event.get("issue") or event.get("pull_request") or {}
     content_id = require(
         content.get("node_id"), "No issue or pull request found in event payload."
     )
-    item = add_project_item(client, project["id"], content_id)
-    print(f"Added to project {project_url}")
+    project, item = get_project(client, project_url, content_id)
+    added = False
+    if item is None:
+        try:
+            item = add_project_item(client, project["id"], content_id)
+            added = True
+        except AutomationError:
+            project, item = get_project(client, project_url, content_id)
+            if item is None:
+                raise
+    if added:
+        print(f"Added to project {project_url}")
+    else:
+        print(f"Already in project {project_url}")
 
     pull_request = event.get("pull_request")
     if (
