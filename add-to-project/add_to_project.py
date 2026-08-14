@@ -192,9 +192,6 @@ def add_project_item(client, project_id, content_id):
           addProjectV2ItemById(input: {projectId: $project, contentId: $content}) {
             item {
               id
-              content {
-                ... on PullRequest { baseRefName baseRefOid }
-              }
               fieldValueByName(name: $field) {
                 ... on ProjectV2ItemFieldSingleSelectValue { name }
               }
@@ -256,17 +253,17 @@ def set_roadmap(client, project_id, item_id, field_id, option_id):
         raise AutomationError("GitHub did not confirm the Roadmap update.")
 
 
-def read_target_pom(client, repository, item):
-    base = item.get("content")
-    if not isinstance(base, dict):
-        raise AutomationError("GitHub did not return the pull request target branch.")
+def read_target_pom(client, repository, pull_request):
     base_ref = require(
-        base.get("baseRefName"), "The pull request target branch is missing."
+        dig(pull_request, "base", "ref"), "The pull request target branch is missing."
     )
-    base_sha = require(base.get("baseRefOid"), "The pull request target SHA is missing.")
+    merge_sha = require(
+        pull_request.get("merge_commit_sha"),
+        "The pull request merged result SHA is missing.",
+    )
 
     pom = client.get(
-        f"repos/{repository}/contents/pom.xml", {"ref": base_sha}
+        f"repos/{repository}/contents/pom.xml", {"ref": merge_sha}
     )
     if not isinstance(pom, dict):
         raise AutomationError("The target branch root pom.xml could not be read.")
@@ -277,10 +274,10 @@ def read_target_pom(client, repository, item):
         pom_xml = base64.b64decode("".join(content.split()), validate=True).decode()
     except (AttributeError, binascii.Error, UnicodeError) as error:
         raise AutomationError("The target branch pom.xml content is invalid.") from error
-    return base_ref, base_sha, pom_xml
+    return base_ref, merge_sha, pom_xml
 
 
-def populate_roadmap(client, repository, project, item):
+def populate_roadmap(client, repository, project, item, pull_request):
     field = project.get("field")
     if not isinstance(field, dict) or field.get("__typename") != (
         "ProjectV2SingleSelectField"
@@ -292,7 +289,7 @@ def populate_roadmap(client, repository, project, item):
         print(f"Roadmap is already set to {current.get('name')!r}; preserving it.")
         return
 
-    base_ref, base_sha, pom_xml = read_target_pom(client, repository, item)
+    base_ref, merge_sha, pom_xml = read_target_pom(client, repository, pull_request)
     roadmap = extract_project_version(pom_xml)
     options = field.get("options") if isinstance(field.get("options"), list) else []
     matches = [option for option in options if option.get("name") == roadmap]
@@ -316,7 +313,10 @@ def populate_roadmap(client, repository, project, item):
         require(field.get("id"), "Roadmap field ID is missing."),
         require(matches[0].get("id"), "Roadmap option ID is missing."),
     )
-    print(f"Set Roadmap to {roadmap!r} from pom.xml on target branch {base_ref} ({base_sha}).")
+    print(
+        f"Set Roadmap to {roadmap!r} from pom.xml on merged target branch "
+        f"{base_ref} ({merge_sha})."
+    )
 
 
 def run(client, event, project_url, repository):
@@ -329,9 +329,13 @@ def run(client, event, project_url, repository):
     print(f"Added to project {project_url}")
 
     pull_request = event.get("pull_request")
-    if pull_request and repository in ROADMAP_REPOSITORIES:
+    if (
+        pull_request
+        and pull_request.get("merged") is True
+        and repository in ROADMAP_REPOSITORIES
+    ):
         try:
-            populate_roadmap(client, repository, project, item)
+            populate_roadmap(client, repository, project, item, pull_request)
         except AutomationError as error:
             number = pull_request.get("number", "unknown")
             raise AutomationError(
