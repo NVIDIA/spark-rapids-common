@@ -37,9 +37,6 @@ ROADMAP_REPOSITORIES = {
 VERSION_PATTERN = re.compile(
     r"^(\d{2}\.(?:0[1-9]|1[0-2]))(?:\.\d+)*(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$"
 )
-GH_PAGES_VERSION_PATTERN = re.compile(
-    r"^## Release v(\d{2}\.(?:0[1-9]|1[0-2]))\.\d+[ \t]*$", re.MULTILINE
-)
 
 
 class AutomationError(Exception):
@@ -148,16 +145,6 @@ def extract_project_version(pom_xml):
             f"The project version {raw_version!r} is not an unambiguous YY.MM release."
         )
     return match.group(1)
-
-
-def extract_gh_pages_version(download_page):
-    """Return the YY.MM release from the download page's release heading."""
-    versions = GH_PAGES_VERSION_PATTERN.findall(download_page)
-    if len(versions) != 1:
-        raise AutomationError(
-            "docs/download.md must contain exactly one '## Release vYY.MM.x' heading."
-        )
-    return versions[0]
 
 
 def get_project(client, project_url, content_id):
@@ -330,23 +317,23 @@ def read_target_version(client, repository, pull_request):
     is_gh_pages = repository == "NVIDIA/cudf-spark" and base_ref == "gh-pages"
     path = "docs/download.md" if is_gh_pages else "pom.xml"
     source = client.get(f"repos/{repository}/contents/{path}", {"ref": merge_sha})
-    if (
-        not isinstance(source, dict)
-        or source.get("type") != "file"
-        or source.get("encoding") != "base64"
-        or not source.get("content")
-    ):
+    content = source.get("content") if isinstance(source, dict) else None
+    if not content or source.get("type") != "file" or source.get("encoding") != "base64":
         raise AutomationError(f"The target branch {path} could not be read.")
     try:
-        encoded = "".join(source["content"].split())
-        text = base64.b64decode(encoded, validate=True).decode()
+        text = base64.b64decode("".join(content.split()), validate=True).decode()
     except (AttributeError, binascii.Error, UnicodeError) as error:
         raise AutomationError(f"The target branch {path} content is invalid.") from error
 
-    extract_version = (
-        extract_gh_pages_version if is_gh_pages else extract_project_version
-    )
-    return base_ref, merge_sha, extract_version(text), path
+    if is_gh_pages:
+        pattern = r"^## Release v(\d{2}\.(?:0[1-9]|1[0-2]))\.\d+[ \t]*$"
+        versions = re.findall(pattern, text, re.MULTILINE)
+        if len(versions) != 1:
+            raise AutomationError("Expected one release heading in docs/download.md.")
+        roadmap = versions[0]
+    else:
+        roadmap = extract_project_version(text)
+    return base_ref, merge_sha, roadmap
 
 
 def populate_roadmap(client, repository, project, item, pull_request):
@@ -361,9 +348,7 @@ def populate_roadmap(client, repository, project, item, pull_request):
         print(f"Roadmap is already set to {current.get('name')!r}; preserving it.")
         return
 
-    base_ref, merge_sha, roadmap, source = read_target_version(
-        client, repository, pull_request
-    )
+    base_ref, merge_sha, roadmap = read_target_version(client, repository, pull_request)
     options = field.get("options") if isinstance(field.get("options"), list) else []
     matches = [option for option in options if option.get("name") == roadmap]
     if len(matches) != 1:
@@ -387,8 +372,8 @@ def populate_roadmap(client, repository, project, item, pull_request):
         require(matches[0].get("id"), "Roadmap option ID is missing."),
     )
     print(
-        f"Set Roadmap to {roadmap!r} from {source} on merged target branch "
-        f"{base_ref} ({merge_sha})."
+        f"Set Roadmap to {roadmap!r} on merged target branch {base_ref} "
+        f"({merge_sha})."
     )
 
 
