@@ -27,6 +27,12 @@ import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 
 MAVEN_POM_NS = {'m': 'http://maven.apache.org/POM/4.0.0'}
+TEMPLATE_PLACEHOLDERS = (
+    '@SCALA_BINARY_VERSION@',
+    '<!--PROJECT_VERSION_PLACEHOLDER-->',
+    '<!--SYSTEM_PROPERTIES_PLACEHOLDER-->',
+    '<!--SYSTEM_DEPENDENCIES_PLACEHOLDER-->',
+)
 
 
 def read_project_version(pom_file):
@@ -45,7 +51,7 @@ def collect_jars(jar_dirs, excludes):
     jars = []
     seen = set()
     for jar_dir in jar_dirs:
-        found = sorted(glob.glob(os.path.join(jar_dir, '*.jar')))
+        found = sorted(glob.glob(os.path.join(glob.escape(jar_dir), '*.jar')))
         if not found:
             raise ValueError(f"No jars found under {jar_dir}")
         for jar in found:
@@ -98,6 +104,9 @@ def main():
 
     with open(args.pom_template) as f:
         pom = f.read()
+    for placeholder in TEMPLATE_PLACEHOLDERS:
+        if placeholder not in pom:
+            raise ValueError(f"Missing {placeholder} in {args.pom_template}")
     jars = collect_jars(args.jar_dir, args.exclude)
     dir_props = jar_dir_properties(jars)
     deps = system_dependencies(jars, dir_props)

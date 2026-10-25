@@ -39,6 +39,15 @@ class SparkHomeDepsTest(unittest.TestCase):
 
             self.assertEqual([str((jar_dir / 'spark.jar').resolve())], jars)
 
+    def test_collect_jars_treats_directory_glob_characters_literally(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            jar_dir = Path(temp_dir) / 'spark[3]' / 'jars'
+            jar_dir.mkdir(parents=True)
+            jar = jar_dir / 'spark.jar'
+            jar.touch()
+
+            self.assertEqual([str(jar.resolve())], GENERATOR.collect_jars([str(jar_dir)], []))
+
     def test_generated_pom_uses_runtime_paths_and_consumer_version(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -74,6 +83,37 @@ class SparkHomeDepsTest(unittest.TestCase):
             self.assertEqual('system', dependency.findtext('m:scope', namespaces=namespace))
             self.assertEqual('${spark.home.jar.dir.0}/spark & sql.jar',
                              dependency.findtext('m:systemPath', namespaces=namespace))
+
+    def test_missing_template_placeholder_fails_before_writing_pom(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            jar_dir = root / 'jars'
+            jar_dir.mkdir()
+            (jar_dir / 'spark.jar').touch()
+            project_pom = root / 'project.xml'
+            project_pom.write_text('<project xmlns="http://maven.apache.org/POM/4.0.0">'
+                                   '<version>1.0</version></project>')
+            template = root / 'template.xml'
+            output = root / 'generated.xml'
+            placeholders = (
+                '@SCALA_BINARY_VERSION@',
+                '<!--PROJECT_VERSION_PLACEHOLDER-->',
+                '<!--SYSTEM_PROPERTIES_PLACEHOLDER-->',
+                '<!--SYSTEM_DEPENDENCIES_PLACEHOLDER-->',
+            )
+            complete_template = ''.join(placeholders)
+
+            for placeholder in placeholders:
+                with self.subTest(placeholder=placeholder):
+                    template.write_text(complete_template.replace(placeholder, ''))
+                    result = subprocess.run([
+                        sys.executable, str(SCRIPT), str(template),
+                        '--output-pom', str(output), '--project-pom', str(project_pom),
+                        '--scala-binary-version', '2.13', '--jar-dir', str(jar_dir),
+                    ], capture_output=True, text=True)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(f'Missing {placeholder}', result.stderr)
+                    self.assertFalse(output.exists())
 
 
 if __name__ == '__main__':
