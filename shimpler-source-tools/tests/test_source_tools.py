@@ -66,6 +66,16 @@ class SourceToolsTest(unittest.TestCase):
         self.assertEqual(selected[logical].physical_path, str(base))
         self.assertEqual((generated / 'main' / 'scala' / 'pkg' / 'B.scala').resolve(), base)
 
+    def test_generation_ignores_known_inactive_introduction(self):
+        self.source('330', 'Old.scala', '{"spark": {"introduced": "330"}}')
+        current = self.source('400', 'Current.scala', '{"spark": "400"}')
+        generated = self.root / 'generated'
+        with self.assertRaisesRegex(ValueError, 'Unknown Spark selector target 330'):
+            generate_sources(str(self.module), str(generated), self.graph, '400')
+        selected = generate_sources(str(self.module), str(generated), self.graph, '400',
+                                    set(self.graph) | {'330'})
+        self.assertEqual({item.physical_path for item in selected.values()}, {str(current)})
+
 
 if __name__ == '__main__':
     unittest.main()
