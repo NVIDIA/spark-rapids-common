@@ -57,7 +57,7 @@ def generate_sources(module_root, generated_root, graph, target, valid_targets=N
             contents = source_file.read()
         match = PACKAGE_CLASSIFIER.search(contents)
         if match is None:
-            os.symlink(source, destination)
+            os.symlink(os.path.abspath(source), destination)
         else:
             with open(destination, 'w') as output:
                 output.write(contents[:match.start(1)])

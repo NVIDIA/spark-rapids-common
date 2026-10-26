@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from pathlib import Path
+import os
 import sys
 import tempfile
 import unittest
@@ -22,7 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from shimpler_source_graph import load_source_graph, source_lineage, validate_source_graph
 from shimpler_source_generator import generate_sources
-from shimpler_source_resolver import resolve_sources, scan_module_sources
+from shimpler_source_resolver import (candidate_inherited_sources, resolve_sources,
+                                      scan_module_sources, validate_legacy_shadow)
 
 
 class SourceToolsTest(unittest.TestCase):
@@ -65,6 +67,49 @@ class SourceToolsTest(unittest.TestCase):
         logical = 'src/main/scala/pkg/B.scala'
         self.assertEqual(selected[logical].physical_path, str(base))
         self.assertEqual((generated / 'main' / 'scala' / 'pkg' / 'B.scala').resolve(), base)
+
+    def test_generation_with_relative_module_root_has_readable_links(self):
+        base = self.source('400', 'B.scala', '{"spark": "400"}')
+        generated = self.root / 'generated'
+        previous = os.getcwd()
+        try:
+            os.chdir(str(self.root))
+            generate_sources('module', str(generated), self.graph, '400')
+        finally:
+            os.chdir(previous)
+        link = generated / 'main' / 'scala' / 'pkg' / 'B.scala'
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.resolve(), base)
+        self.assertIn('class Example', link.read_text())
+
+    def test_closed_exact_membership_can_be_inherited(self):
+        self.source('400', 'Closed.scala', '{"spark": "400"}\n{"spark": "401"}')
+        variants, _ = scan_module_sources(str(self.module), self.graph)
+        candidates, non_inheritable = candidate_inherited_sources(self.graph, variants)
+        self.assertFalse(non_inheritable)
+        self.assertEqual(candidates[0].selectors[0].kind, 'introduced')
+        self.assertEqual(candidates[0].selectors[0].targets, ('400',))
+        self.assertEqual(validate_legacy_shadow(self.graph, variants), ())
+
+    def test_removed_source_keeps_exact_membership(self):
+        graph = {'400': None, '401': '400', '402': '401'}
+        source = self.source('400', 'Removed.scala',
+                             '{"spark": "400"}\n{"spark": "401"}')
+        variants, _ = scan_module_sources(str(self.module), graph)
+        candidates, non_inheritable = candidate_inherited_sources(graph, variants)
+        self.assertEqual(non_inheritable, (str(source),))
+        self.assertEqual(candidates[0].selectors[0].kind, 'exact')
+        self.assertEqual(validate_legacy_shadow(graph, variants), (str(source),))
+        self.assertFalse(resolve_sources(graph, candidates, '402'))
+
+    def test_target_specific_logical_path_keeps_exact_membership(self):
+        source = self.source('400', 'spark400/Specific.scala',
+                             '{"spark": "400"}\n{"spark": "401"}')
+        variants, _ = scan_module_sources(str(self.module), self.graph)
+        candidates, non_inheritable = candidate_inherited_sources(self.graph, variants)
+        self.assertEqual(non_inheritable, (str(source),))
+        self.assertEqual(candidates[0].selectors[0].kind, 'exact')
+        self.assertEqual(validate_legacy_shadow(self.graph, variants), (str(source),))
 
     def test_generation_ignores_known_inactive_introduction(self):
         self.source('330', 'Old.scala', '{"spark": {"introduced": "330"}}')
