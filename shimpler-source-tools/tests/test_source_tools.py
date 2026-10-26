@@ -51,8 +51,10 @@ class SourceToolsTest(unittest.TestCase):
         return path
 
     def test_inherited_source_and_exact_override(self):
-        base = self.source('400', 'A.scala', '{"spark": {"introduced": "400"}}')
-        override = self.source('401', 'A.scala', '{"spark": "401"}')
+        base = self.source('400', 'A.scala',
+                           '{"spark":["400"],"includeDescendantShims":true}')
+        override = self.source('401', 'A.scala',
+                               '{"spark":["401"],"includeDescendantShims":false}')
         variants, skipped = scan_module_sources(str(self.module), self.graph)
         self.assertEqual(skipped, [])
         logical = 'src/main/scala/pkg/A.scala'
@@ -65,7 +67,8 @@ class SourceToolsTest(unittest.TestCase):
         graph = {'330': None, '331': '330', '350': None, '351': '350'}
         shared = self.source('330', 'Shared.scala',
                              '{"spark":["330","350"],"includeDescendantShims":true}')
-        override = self.source('351', 'Shared.scala', '{"spark":"351"}')
+        override = self.source('351', 'Shared.scala',
+                               '{"spark":["351"],"includeDescendantShims":false}')
         variants, skipped = scan_module_sources(str(self.module), graph)
         self.assertFalse(skipped)
         logical = 'src/main/scala/pkg/Shared.scala'
@@ -75,22 +78,36 @@ class SourceToolsTest(unittest.TestCase):
         self.assertEqual(resolve_sources(graph, variants, '351')[logical].physical_path,
                          str(override))
 
+    def test_exact_list_does_not_include_descendants(self):
+        graph = {'330': None, '331': '330', '350': None, '351': '350'}
+        source = self.source('330', 'Exact.scala',
+                             '{"spark":["330","350"],"includeDescendantShims":false}')
+        variants, skipped = scan_module_sources(str(self.module), graph)
+        self.assertFalse(skipped)
+        logical = 'src/main/scala/pkg/Exact.scala'
+        for target in ('330', '350'):
+            self.assertEqual(resolve_sources(graph, variants, target)[logical].physical_path,
+                             str(source))
+        for target in ('331', '351'):
+            self.assertNotIn(logical, resolve_sources(graph, variants, target))
+
     def test_descendant_list_requires_true_flag_and_known_unique_roots(self):
         graph = {'330': None, '350': None}
         valid = parse_selector_line(
             '{"spark":["330","350"],"includeDescendantShims":true,"delta":"test"}', graph)
-        self.assertEqual(valid.kind, 'introduced')
+        self.assertEqual(valid.kind, 'descendants')
         self.assertEqual(valid.targets, ('330', '350'))
         self.assertEqual(valid.other_components, {'delta': 'test'})
         for invalid, message in (
                 ('{"spark":[],"includeDescendantShims":true}', 'nonempty'),
                 ('{"spark":["330","330"],"includeDescendantShims":true}', 'Duplicate'),
                 ('{"spark":["330","999"],"includeDescendantShims":true}', 'Unknown'),
-                ('{"spark":["330","350"]}', 'requires includeDescendantShims=true'),
-                ('{"spark":["330","350"],"includeDescendantShims":false}',
-                 'requires includeDescendantShims=true'),
-                ('{"spark":"330","includeDescendantShims":true}',
-                 'requires a Spark target list')):
+                ('{"spark":["330","350"]}', 'includeDescendantShims boolean'),
+                ('{"spark":["330"],"includeDescendantShims":1}',
+                 'includeDescendantShims boolean'),
+                ('{"spark":"330"}', 'target list'),
+                ('{"spark":{"introduced":"330"}}', 'target list'),
+                ('{"spark":{"only":"330"}}', 'target list')):
             with self.subTest(selector=invalid), self.assertRaisesRegex(ValueError, message):
                 parse_selector_line(invalid, graph)
 
@@ -105,7 +122,8 @@ class SourceToolsTest(unittest.TestCase):
         self.assertEqual((generated / 'main' / 'scala' / 'pkg' / 'B.scala').resolve(), base)
 
     def test_generation_with_relative_module_root_has_readable_links(self):
-        base = self.source('400', 'B.scala', '{"spark": "400"}')
+        base = self.source('400', 'B.scala',
+                           '{"spark":["400"],"includeDescendantShims":false}')
         generated = self.root / 'generated'
         previous = os.getcwd()
         try:
@@ -119,18 +137,19 @@ class SourceToolsTest(unittest.TestCase):
         self.assertIn('class Example', link.read_text())
 
     def test_closed_exact_membership_can_be_inherited(self):
-        self.source('400', 'Closed.scala', '{"spark": "400"}\n{"spark": "401"}')
+        self.source('400', 'Closed.scala',
+                    '{"spark":["400","401"],"includeDescendantShims":false}')
         variants, _ = scan_module_sources(str(self.module), self.graph)
         candidates, non_inheritable = candidate_inherited_sources(self.graph, variants)
         self.assertFalse(non_inheritable)
-        self.assertEqual(candidates[0].selectors[0].kind, 'introduced')
+        self.assertEqual(candidates[0].selectors[0].kind, 'descendants')
         self.assertEqual(candidates[0].selectors[0].targets, ('400',))
         self.assertEqual(validate_legacy_shadow(self.graph, variants), ())
 
     def test_removed_source_keeps_exact_membership(self):
         graph = {'400': None, '401': '400', '402': '401'}
         source = self.source('400', 'Removed.scala',
-                             '{"spark": "400"}\n{"spark": "401"}')
+                             '{"spark":["400","401"],"includeDescendantShims":false}')
         variants, _ = scan_module_sources(str(self.module), graph)
         candidates, non_inheritable = candidate_inherited_sources(graph, variants)
         self.assertEqual(non_inheritable, (str(source),))
@@ -140,7 +159,7 @@ class SourceToolsTest(unittest.TestCase):
 
     def test_target_specific_logical_path_keeps_exact_membership(self):
         source = self.source('400', 'spark400/Specific.scala',
-                             '{"spark": "400"}\n{"spark": "401"}')
+                             '{"spark":["400","401"],"includeDescendantShims":false}')
         variants, _ = scan_module_sources(str(self.module), self.graph)
         candidates, non_inheritable = candidate_inherited_sources(self.graph, variants)
         self.assertEqual(non_inheritable, (str(source),))
@@ -148,8 +167,10 @@ class SourceToolsTest(unittest.TestCase):
         self.assertEqual(validate_legacy_shadow(self.graph, variants), (str(source),))
 
     def test_generation_ignores_known_inactive_introduction(self):
-        self.source('330', 'Old.scala', '{"spark": {"introduced": "330"}}')
-        current = self.source('400', 'Current.scala', '{"spark": "400"}')
+        self.source('330', 'Old.scala',
+                    '{"spark":["330"],"includeDescendantShims":true}')
+        current = self.source('400', 'Current.scala',
+                              '{"spark":["400"],"includeDescendantShims":false}')
         generated = self.root / 'generated'
         with self.assertRaisesRegex(ValueError, 'Unknown Spark selector target 330'):
             generate_sources(str(self.module), str(generated), self.graph, '400')
@@ -159,8 +180,10 @@ class SourceToolsTest(unittest.TestCase):
 
     def test_branching_lineage_and_exact_only_source(self):
         graph = {'400': None, '401': '400', '402': '400'}
-        base = self.source('400', 'Base.scala', '{"spark": {"introduced": "400"}}')
-        only = self.source('401', 'Only.scala', '{"spark": {"only": "401"}}')
+        base = self.source('400', 'Base.scala',
+                           '{"spark":["400"],"includeDescendantShims":true}')
+        only = self.source('401', 'Only.scala',
+                           '{"spark":["401"],"includeDescendantShims":false}')
         variants, skipped = scan_module_sources(str(self.module), graph)
         self.assertFalse(skipped)
         self.assertEqual(source_lineage(graph, '402'), ['402', '400'])
@@ -176,8 +199,8 @@ class SourceToolsTest(unittest.TestCase):
             validate_source_graph({'400': '401', '401': '400'})
 
     def test_ambiguity_preserves_previous_generated_sources(self):
-        self.source('400', 'A.scala', '{"spark": "401"}')
-        self.source('401', 'A.scala', '{"spark": "401"}')
+        self.source('400', 'A.scala', '{"spark":["401"],"includeDescendantShims":false}')
+        self.source('401', 'A.scala', '{"spark":["401"],"includeDescendantShims":false}')
         generated = self.root / 'generated'
         previous = generated / 'main' / 'scala' / 'pkg' / 'Previous.scala'
         previous.parent.mkdir(parents=True)
@@ -187,7 +210,7 @@ class SourceToolsTest(unittest.TestCase):
         self.assertEqual(previous.read_text(), 'previous')
 
     def test_generation_removes_stale_sources(self):
-        self.source('400', 'A.scala', '{"spark": "400"}')
+        self.source('400', 'A.scala', '{"spark":["400"],"includeDescendantShims":false}')
         generated = self.root / 'generated'
         stale = generated / 'main' / 'scala' / 'pkg' / 'Stale.scala'
         stale.parent.mkdir(parents=True)

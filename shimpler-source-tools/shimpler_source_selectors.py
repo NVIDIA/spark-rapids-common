@@ -46,30 +46,11 @@ def parse_selector_line(line, graph, allow_unmapped_exact=False):
 
     spark = entry['spark']
     descendant_flag = entry.get('includeDescendantShims')
-    if 'includeDescendantShims' in entry and not isinstance(spark, list):
-        raise ValueError('includeDescendantShims requires a Spark target list')
-    if isinstance(spark, list):
-        if descendant_flag is not True:
-            raise ValueError('Spark target list requires includeDescendantShims=true')
-        kind = 'introduced'
-        targets = tuple(spark)
-    elif isinstance(spark, string_types):
-        kind = 'exact'
-        targets = (spark,)
-    elif isinstance(spark, dict):
-        if len(spark) != 1 or next(iter(spark)) not in ('introduced', 'only'):
-            raise ValueError('Spark selector must have exactly one of introduced or only')
-        kind = next(iter(spark))
-        value = spark[kind]
-        if isinstance(value, string_types):
-            targets = (value,)
-        elif kind == 'introduced' and isinstance(value, list):
-            targets = tuple(value)
-        else:
-            raise ValueError('%s selector must name a target%s' %
-                             (kind, ' or nonempty target list' if kind == 'introduced' else ''))
-    else:
-        raise ValueError('Spark selector must be a target or selector object')
+    if not isinstance(spark, list) or type(descendant_flag) is not bool:
+        raise ValueError('Spark selector requires a target list and '
+                         'includeDescendantShims boolean')
+    kind = 'descendants' if descendant_flag else 'exact'
+    targets = tuple(spark)
 
     if not targets or any(not isinstance(target, string_types) or not target for target in targets):
         raise ValueError('Spark selector targets must be nonempty strings')

@@ -106,7 +106,7 @@ def discover_shim_modules(repository_root):
 def _matching_selection(variant, lineage):
     matches = []
     for selector in variant.selectors:
-        if selector.kind in ('exact', 'only'):
+        if selector.kind == 'exact':
             if lineage[0] in selector.targets:
                 matches.append((0, lineage[0], selector.kind))
         else:
@@ -161,27 +161,22 @@ def candidate_inherited_sources(graph, variants):
     candidates = []
     non_inheritable = []
     for variant in variants:
-        if any(selector.kind == 'introduced' for selector in variant.selectors):
+        if any(selector.kind == 'descendants' for selector in variant.selectors):
             raise ValueError('A captured pre-conversion oracle is required for %s' %
                              variant.logical_path)
         exact = set(target for selector in variant.selectors if selector.kind == 'exact'
                     for target in selector.targets if target in graph)
-        only = set(target for selector in variant.selectors if selector.kind == 'only'
-                   for target in selector.targets if target in graph)
-        if not exact and not only:
+        if not exact:
             continue
         selectors = []
-        if exact:
-            introductions = derive_introductions(graph, exact)
-            target_specific = any(re.match(r'spark[^/]+$', part) for part in
-                                  variant.logical_path.split('/'))
-            if not target_specific and inherited_membership(graph, introductions) == exact:
-                selectors.append(SourceSelector('introduced', introductions, {}))
-            else:
-                non_inheritable.append(variant.physical_path)
-                selectors.append(SourceSelector('exact', tuple(sorted(exact)), {}))
-        if only:
-            selectors.append(SourceSelector('only', tuple(sorted(only)), {}))
+        introductions = derive_introductions(graph, exact)
+        target_specific = any(re.match(r'spark[^/]+$', part) for part in
+                              variant.logical_path.split('/'))
+        if not target_specific and inherited_membership(graph, introductions) == exact:
+            selectors.append(SourceSelector('descendants', introductions, {}))
+        else:
+            non_inheritable.append(variant.physical_path)
+            selectors.append(SourceSelector('exact', tuple(sorted(exact)), {}))
         candidates.append(variant._replace(selectors=tuple(selectors)))
     return candidates, tuple(sorted(non_inheritable))
 
