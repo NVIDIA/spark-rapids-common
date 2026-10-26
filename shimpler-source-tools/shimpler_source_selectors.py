@@ -45,7 +45,15 @@ def parse_selector_line(line, graph, allow_unmapped_exact=False):
         raise ValueError('Shim selector must contain a spark field')
 
     spark = entry['spark']
-    if isinstance(spark, string_types):
+    descendant_flag = entry.get('includeDescendantShims')
+    if 'includeDescendantShims' in entry and not isinstance(spark, list):
+        raise ValueError('includeDescendantShims requires a Spark target list')
+    if isinstance(spark, list):
+        if descendant_flag is not True:
+            raise ValueError('Spark target list requires includeDescendantShims=true')
+        kind = 'introduced'
+        targets = tuple(spark)
+    elif isinstance(spark, string_types):
         kind = 'exact'
         targets = (spark,)
     elif isinstance(spark, dict):
@@ -71,7 +79,8 @@ def parse_selector_line(line, graph, allow_unmapped_exact=False):
         if target not in graph and not (kind == 'exact' and allow_unmapped_exact):
             raise ValueError('Unknown Spark selector target %s' % target)
 
-    other_components = dict((key, value) for key, value in entry.items() if key != 'spark')
+    other_components = dict((key, value) for key, value in entry.items()
+                            if key not in ('spark', 'includeDescendantShims'))
     return SourceSelector(kind, targets, other_components)
 
 

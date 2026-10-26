@@ -25,6 +25,7 @@ from shimpler_source_graph import load_source_graph, source_lineage, validate_so
 from shimpler_source_generator import generate_sources
 from shimpler_source_resolver import (candidate_inherited_sources, resolve_sources,
                                       scan_module_sources, validate_legacy_shadow)
+from shimpler_source_selectors import parse_selector_line
 
 
 class SourceToolsTest(unittest.TestCase):
@@ -60,10 +61,45 @@ class SourceToolsTest(unittest.TestCase):
         self.assertEqual(resolve_sources(self.graph, variants, '401')[logical].physical_path,
                          str(override))
 
+    def test_descendant_list_spans_roots_and_respects_nearer_override(self):
+        graph = {'330': None, '331': '330', '350': None, '351': '350'}
+        shared = self.source('330', 'Shared.scala',
+                             '{"spark":["330","350"],"includeDescendantShims":true}')
+        override = self.source('351', 'Shared.scala', '{"spark":"351"}')
+        variants, skipped = scan_module_sources(str(self.module), graph)
+        self.assertFalse(skipped)
+        logical = 'src/main/scala/pkg/Shared.scala'
+        for target in ('330', '331', '350'):
+            self.assertEqual(resolve_sources(graph, variants, target)[logical].physical_path,
+                             str(shared))
+        self.assertEqual(resolve_sources(graph, variants, '351')[logical].physical_path,
+                         str(override))
+
+    def test_descendant_list_requires_true_flag_and_known_unique_roots(self):
+        graph = {'330': None, '350': None}
+        valid = parse_selector_line(
+            '{"spark":["330","350"],"includeDescendantShims":true,"delta":"test"}', graph)
+        self.assertEqual(valid.kind, 'introduced')
+        self.assertEqual(valid.targets, ('330', '350'))
+        self.assertEqual(valid.other_components, {'delta': 'test'})
+        for invalid, message in (
+                ('{"spark":[],"includeDescendantShims":true}', 'nonempty'),
+                ('{"spark":["330","330"],"includeDescendantShims":true}', 'Duplicate'),
+                ('{"spark":["330","999"],"includeDescendantShims":true}', 'Unknown'),
+                ('{"spark":["330","350"]}', 'requires includeDescendantShims=true'),
+                ('{"spark":["330","350"],"includeDescendantShims":false}',
+                 'requires includeDescendantShims=true'),
+                ('{"spark":"330","includeDescendantShims":true}',
+                 'requires a Spark target list')):
+            with self.subTest(selector=invalid), self.assertRaisesRegex(ValueError, message):
+                parse_selector_line(invalid, graph)
+
     def test_generation_uses_inherited_source(self):
-        base = self.source('400', 'B.scala', '{"spark": {"introduced": "400"}}')
+        graph = {'330': None, '331': '330', '400': None, '401': '400'}
+        base = self.source('400', 'B.scala',
+                           '{"spark":["330","400"],"includeDescendantShims":true}')
         generated = self.root / 'generated'
-        selected = generate_sources(str(self.module), str(generated), self.graph, '401')
+        selected = generate_sources(str(self.module), str(generated), graph, '401')
         logical = 'src/main/scala/pkg/B.scala'
         self.assertEqual(selected[logical].physical_path, str(base))
         self.assertEqual((generated / 'main' / 'scala' / 'pkg' / 'B.scala').resolve(), base)
