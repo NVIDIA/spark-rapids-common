@@ -20,7 +20,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from shimpler_source_graph import load_source_graph
+from shimpler_source_graph import load_source_graph, source_lineage, validate_source_graph
 from shimpler_source_generator import generate_sources
 from shimpler_source_resolver import resolve_sources, scan_module_sources
 
@@ -75,6 +75,44 @@ class SourceToolsTest(unittest.TestCase):
         selected = generate_sources(str(self.module), str(generated), self.graph, '400',
                                     set(self.graph) | {'330'})
         self.assertEqual({item.physical_path for item in selected.values()}, {str(current)})
+
+    def test_branching_lineage_and_exact_only_source(self):
+        graph = {'400': None, '401': '400', '402': '400'}
+        base = self.source('400', 'Base.scala', '{"spark": {"introduced": "400"}}')
+        only = self.source('401', 'Only.scala', '{"spark": {"only": "401"}}')
+        variants, skipped = scan_module_sources(str(self.module), graph)
+        self.assertFalse(skipped)
+        self.assertEqual(source_lineage(graph, '402'), ['402', '400'])
+        self.assertEqual({source.physical_path for source in
+                          resolve_sources(graph, variants, '401').values()}, {str(base), str(only)})
+        self.assertEqual({source.physical_path for source in
+                          resolve_sources(graph, variants, '402').values()}, {str(base)})
+
+    def test_rejects_missing_parent_and_cycle(self):
+        with self.assertRaisesRegex(ValueError, 'Source parent 400 of 401 is not a build target'):
+            validate_source_graph({'401': '400'})
+        with self.assertRaisesRegex(ValueError, 'Source inheritance cycle'):
+            validate_source_graph({'400': '401', '401': '400'})
+
+    def test_ambiguity_preserves_previous_generated_sources(self):
+        self.source('400', 'A.scala', '{"spark": "401"}')
+        self.source('401', 'A.scala', '{"spark": "401"}')
+        generated = self.root / 'generated'
+        previous = generated / 'main' / 'scala' / 'pkg' / 'Previous.scala'
+        previous.parent.mkdir(parents=True)
+        previous.write_text('previous')
+        with self.assertRaisesRegex(ValueError, 'Ambiguous shim sources'):
+            generate_sources(str(self.module), str(generated), self.graph, '401')
+        self.assertEqual(previous.read_text(), 'previous')
+
+    def test_generation_removes_stale_sources(self):
+        self.source('400', 'A.scala', '{"spark": "400"}')
+        generated = self.root / 'generated'
+        stale = generated / 'main' / 'scala' / 'pkg' / 'Stale.scala'
+        stale.parent.mkdir(parents=True)
+        stale.write_text('stale')
+        generate_sources(str(self.module), str(generated), self.graph, '400')
+        self.assertFalse(stale.exists())
 
 
 if __name__ == '__main__':
