@@ -1,0 +1,85 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Publish signoff image
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signoff-image
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.repository == 'NVIDIA/spark-rapids-common' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || vars.SIGNOFF_IMAGE_PUBLISH_ENABLED == 'true')
+    runs-on: linux-amd64-cpu16
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout image source
+        uses: NVIDIA/spark-rapids-common/checkout@main
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up emulation
+        uses: docker/setup-qemu-action@v4.4.0
+        with:
+          platforms: arm64
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+      - name: Build, verify anonymous access, and publish
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          IMAGE: ghcr.io/nvidia/spark-rapids-common/signoff-check
+        run: |
+          set -euo pipefail
+          anonymous_config=$(mktemp -d)
+          metadata=$(mktemp)
+          trap 'docker logout ghcr.io; rm -rf "$anonymous_config"; rm -f "$metadata"' EXIT
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
+
+          candidate="$IMAGE:build-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker buildx build --pull --platform linux/amd64,linux/arm64 \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --tag "$candidate" --metadata-file "$metadata" --push signoff-check
+          digest=$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' "$metadata")
+          reference="$IMAGE@$digest"
+
+          # A public repository does not make a newly created GHCR package public.
+          for platform in linux/amd64 linux/arm64; do
+            if ! docker --config "$anonymous_config" pull --platform "$platform" "$reference"; then
+              echo "::error::Anonymous image pull failed. For the first publish, set the GHCR package visibility to public and rerun. The v1 tag has not been updated."
+              exit 1
+            fi
+            docker --config "$anonymous_config" run --rm --platform "$platform" "$reference" --help
+            docker --config "$anonymous_config" run --rm --interactive --platform "$platform" \
+              --entrypoint python "$reference" - --help < signoff-check/signoff-check
+          done
+
+          docker buildx imagetools create --tag "$IMAGE:v1" "$reference"
+          printf 'Published %s:v1 from %s. Both platforms passed anonymous pull and smoke checks.\n' \
+            "$IMAGE" "$reference" >> "$GITHUB_STEP_SUMMARY"
