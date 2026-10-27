@@ -1,0 +1,58 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: GPU queue fallback
+description: Dispatch one GPU job at a time, changing compatible pools only on queue timeout
+inputs:
+  github-token:
+    description: Same-repository token with actions write and contents read permissions
+    default: ${{ github.token }}
+  workflow:
+    description: Dedicated workflow_dispatch workflow filename in the calling repository
+    required: true
+  workflow-ref:
+    description: Trusted branch or tag containing the child workflow, never a PR ref
+    required: true
+  source-ref:
+    description: Source ref to monitor for changes, for example refs/pull/123/merge
+    required: true
+  source-sha:
+    description: Full approved source SHA; must match source-ref throughout the run
+    required: true
+  runners:
+    description: Ordered JSON array of up to three compatible runner objects with group and labels
+    required: true
+  workload:
+    description: JSON object passed unchanged to the child, such as image digest and artifact run ID
+    default: '{}'
+  queue-timeout-minutes:
+    description: Maximum observed queued time per candidate, from 1 to 30 minutes
+    default: '10'
+  execution-timeout-minutes:
+    description: Maximum observed execution time, from 1 to 300 minutes; never retried
+    default: '180'
+outputs:
+  run-id:
+    description: Last dispatched child run ID
+  run-url:
+    description: Last dispatched child run URL
+  runner:
+    description: Last selected runner object as JSON
+  attempts:
+    description: Number of dispatched candidates
+runs:
+  using: node24
+  main: index.js
+  post: cleanup.js
+  post-if: always()
