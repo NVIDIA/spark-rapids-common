@@ -18,20 +18,22 @@ on:
   schedule:
     - cron: '17 2 * * *'
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: signoff-image
+  group: signoff-image-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   publish:
     if: >-
       github.repository == 'NVIDIA/spark-rapids-common' &&
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'workflow_dispatch' || vars.SIGNOFF_IMAGE_PUBLISH_ENABLED == 'true')
+      ((github.ref == 'refs/heads/main' &&
+        (github.event_name == 'workflow_dispatch' || vars.SIGNOFF_IMAGE_PUBLISH_ENABLED == 'true')) ||
+       (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/pull-request/')))
     runs-on: linux-amd64-cpu16
     timeout-minutes: 30
     permissions:
@@ -49,7 +51,7 @@ jobs:
           platforms: arm64
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.4.1
-      - name: Build, verify anonymous access, and publish
+      - name: Build, verify, and publish
         shell: bash
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -57,6 +59,12 @@ jobs:
           IMAGE: ghcr.io/nvidia/spark-rapids-common/signoff-check
         run: |
           set -euo pipefail
+          tag=v1
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            pr_number=${GITHUB_REF_NAME#pull-request/}
+            [[ "$pr_number" =~ ^[0-9]+$ ]]
+            tag="pr-$pr_number"
+          fi
           anonymous_config=$(mktemp -d)
           metadata=$(mktemp)
           trap 'docker logout ghcr.io; rm -rf "$anonymous_config"; rm -f "$metadata"' EXIT
@@ -70,16 +78,25 @@ jobs:
           reference="$IMAGE@$digest"
 
           # A public repository does not make a newly created GHCR package public.
+          anonymous_access=true
           for platform in linux/amd64 linux/arm64; do
             if ! docker --config "$anonymous_config" pull --platform "$platform" "$reference"; then
-              echo "::error::Anonymous image pull failed. For the first publish, set the GHCR package visibility to public and rerun. The v1 tag has not been updated."
-              exit 1
+              anonymous_access=false
+              if [[ "$tag" == v1 ]]; then
+                echo "::error::Anonymous image pull failed. Set the GHCR package visibility to public and rerun. The v1 tag has not been updated."
+                exit 1
+              fi
+              # Preview publication bootstraps the package before its visibility is set.
+              docker pull --platform "$platform" "$reference"
             fi
-            docker --config "$anonymous_config" run --rm --platform "$platform" "$reference" --help
-            docker --config "$anonymous_config" run --rm --interactive --platform "$platform" \
+            docker run --rm --platform "$platform" "$reference" --help
+            docker run --rm --interactive --platform "$platform" \
               --entrypoint python "$reference" - --help < signoff-check/signoff-check
           done
 
-          docker buildx imagetools create --tag "$IMAGE:v1" "$reference"
-          printf 'Published %s:v1 from %s. Both platforms passed anonymous pull and smoke checks.\n' \
-            "$IMAGE" "$reference" >> "$GITHUB_STEP_SUMMARY"
+          docker buildx imagetools create --tag "$IMAGE:$tag" "$reference"
+          printf 'Published %s:%s from %s. Both platforms passed CLI smoke checks. Anonymous pulls: %s.\n' \
+            "$IMAGE" "$tag" "$reference" "$anonymous_access" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$anonymous_access" != true ]]; then
+            echo "::warning::Preview image published, but anonymous pulls are unavailable. Set the GHCR package visibility to Public for credential-free consumers. The v1 tag is unchanged."
+          fi

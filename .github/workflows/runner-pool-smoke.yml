@@ -74,3 +74,10 @@ jobs:
           nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
           docker run --rm --gpus all --entrypoint nvidia-smi "$SMOKE_IMAGE" \
             --query-gpu=name,driver_version,memory.total --format=csv
+
+  publish-preview:
+    needs: smoke
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/signoff-image.yml

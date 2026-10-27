@@ -34,9 +34,17 @@ The `Publish signoff image` workflow builds on `linux-amd64-cpu16` using only th
 repository's built-in `GITHUB_TOKEN` with `packages: write`. It accepts manual
 dispatches from `main`; nightly publishing at 02:17 UTC is enabled by setting
 the repository variable `SIGNOFF_IMAGE_PUBLISH_ENABLED=true` after runner access
-is granted. It never publishes from pull requests or forks.
+is granted. Production `v1` publication is restricted to `main` and requires
+anonymous pulls to succeed. Fork workflows cannot publish.
 
-For initial setup:
+The PR workflow also calls this publisher after both runner smoke jobs pass.
+Reviewed `pull-request/<number>` branches publish an amd64/arm64 preview as
+`ghcr.io/nvidia/spark-rapids-common/signoff-check:pr-<number>`, without changing
+`v1`. Both platforms pass CLI smoke checks before the preview tag is updated.
+If the new package is still private, the preview uses authenticated pulls for
+validation and reports a warning; consumers still need the package made Public.
+
+For initial setup (skip package creation if a PR preview already created it):
 
 1. Merge the workflow and confirm CPU runner access for this repository.
 2. Dispatch `Publish signoff image` on `main` to create the GHCR package.
@@ -59,7 +67,9 @@ The `Runner pool smoke test` workflow runs two independent jobs:
 - `nv-gpu-general`: `linux-amd64-gpu-l4-latest-1`, including host and Docker GPU access.
 
 Both build the signoff runtime locally and check its CLI and stdin-based script
-execution. They do not publish to GHCR or require registry credentials.
+execution, with read-only repository permissions. After both pass, a separate
+CPU job publishes the PR preview using only the built-in `GITHUB_TOKEN` with
+`packages: write`; no PAT or additional secret is required.
 
 The workflow runs on `pull-request/<number>` branches in the NVIDIA repository,
 using the exact reviewed PR-head commit. GitHub attaches the resulting CPU and
