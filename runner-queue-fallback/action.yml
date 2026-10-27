@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: GPU queue fallback
-description: Dispatch one GPU job at a time, changing compatible pools only on queue timeout
+name: Runner queue fallback
+description: Dispatch one CPU or GPU job at a time, changing compatible pools only on queue timeout
 inputs:
   github-token:
     description: Same-repository token with actions write and contents read permissions
@@ -31,7 +31,7 @@ inputs:
     description: Full approved source SHA; must match source-ref throughout the run
     required: true
   runners:
-    description: Ordered JSON array of up to three compatible runner objects with group and labels
+    description: Ordered JSON array of up to three compatible CPU or GPU runner objects with group and labels
     required: true
   workload:
     description: JSON object passed unchanged to the child, such as image digest and artifact run ID

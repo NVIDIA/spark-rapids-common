@@ -23,14 +23,18 @@ const {test} = require('node:test');
 
 const sourceSha = 'a'.repeat(40);
 const workflowSha = 'b'.repeat(40);
-const runners = [
+const gpuRunners = [
   {group: 'nv-gpu-amd64-rtxpro6000-1gpu', labels: 'linux-amd64-gpu-rtxpro6000-latest-1'},
   {group: 'nv-gpu-amd64-h100-1gpu', labels: 'linux-amd64-gpu-h100-latest-1'},
   {group: 'nv-gpu-general', labels: 'linux-amd64-gpu-l4-latest-1'},
 ];
+const cpuRunners = [
+  {group: 'nv-cpu-general', labels: 'linux-amd64-cpu16'},
+  {group: 'nv-cpu-general', labels: 'linux-amd64-cpu32'},
+];
 
-function fixture(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gpu-fallback-'));
+function fixture(t, runners = gpuRunners) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-fallback-'));
   const env = {
     GITHUB_API_URL: 'https://api.example.invalid',
     GITHUB_SERVER_URL: 'https://example.invalid',
@@ -41,12 +45,12 @@ function fixture(t) {
     GITHUB_STEP_SUMMARY: path.join(directory, 'summary'),
     STATE_active: 'null',
     'INPUT_GITHUB-TOKEN': 'test-token',
-    INPUT_WORKFLOW: 'gpu-worker.yml', 'INPUT_WORKFLOW-REF': 'main',
+    INPUT_WORKFLOW: 'runner-worker.yml', 'INPUT_WORKFLOW-REF': 'main',
     'INPUT_SOURCE-REF': 'refs/pull/1/merge', 'INPUT_SOURCE-SHA': sourceSha,
     INPUT_RUNNERS: JSON.stringify(runners),
     INPUT_WORKLOAD: JSON.stringify({artifactRunId: 42, artifactName: 'build'}),
     'INPUT_QUEUE-TIMEOUT-MINUTES': '1', 'INPUT_EXECUTION-TIMEOUT-MINUTES': '1',
-    'INPUT_REQUEST-ID': 'gpu-7-1-guard',
+    'INPUT_REQUEST-ID': 'runner-7-1-guard',
     'INPUT_PARENT-RUN-ID': '7', 'INPUT_PARENT-RUN-ATTEMPT': '1',
   };
   const originalEnv = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
@@ -75,7 +79,7 @@ function fixture(t) {
     },
     acquire(run) {
       run.job.runner_id = 123;
-      run.job.runner_name = 'fake-gpu';
+      run.job.runner_name = 'fake-runner';
     },
     state() {
       const lines = fs.readFileSync(env.GITHUB_STATE, 'utf8').trim().split('\n');
@@ -127,7 +131,7 @@ function fixture(t) {
     if (options.method === 'GET' && route === '/commits/main') return json({sha: workflowSha});
     if (options.method === 'GET' && route === '/commits/refs%2Fpull%2F1%2Fmerge') return json({sha: f.source});
     if (options.method === 'GET' && route === '/actions/runs/7') return json(f.parent);
-    if (options.method === 'POST' && route === '/actions/workflows/gpu-worker.yml/dispatches') {
+    if (options.method === 'POST' && route === '/actions/workflows/runner-worker.yml/dispatches') {
       // Catch duplicate/overlapping dispatch even if a scenario otherwise ends successfully.
       if (f.runs.some(run => run.status !== 'completed')) {
         f.unexpected.push('dispatch before previous run completed');
@@ -138,7 +142,7 @@ function fixture(t) {
         run_attempt: 1, event: 'workflow_dispatch', head_sha: workflowSha,
         display_title: payload.inputs['request-id'], payload,
         job: {
-          name: 'gpu', status: 'queued', conclusion: null,
+          name: 'worker', status: 'queued', conclusion: null,
           runner_id: 0, runner_name: '', steps: [],
           started_at: new Date(f.now).toISOString(),
           labels: [JSON.parse(payload.inputs.runner).labels],
@@ -149,7 +153,7 @@ function fixture(t) {
       await f.onDispatch(run);
       return json({workflow_run_id: run.id});
     }
-    if (options.method === 'GET' && route === '/actions/workflows/gpu-worker.yml/runs') {
+    if (options.method === 'GET' && route === '/actions/workflows/runner-worker.yml/runs') {
       return json({total_count: f.runs.length, workflow_runs: f.runs});
     }
     const match = route.match(/^\/actions\/runs\/(\d+)(\/cancel|\/attempts\/1\/jobs)?$/);
@@ -181,7 +185,7 @@ test('primary success forwards immutable inputs and reports the selected run', {
   assert.deepEqual(JSON.parse(f.runs[0].payload.inputs.workload), {artifactRunId: 42, artifactName: 'build'});
   assert.equal(f.outputs()['run-id'], '100');
   assert.equal(f.outputs().attempts, '1');
-  assert.deepEqual(JSON.parse(f.outputs().runner), runners[0]);
+  assert.deepEqual(JSON.parse(f.outputs().runner), gpuRunners[0]);
   assert.equal(f.state(), null);
   assert.equal(f.errors.length, 0);
 });
@@ -197,7 +201,7 @@ test('fallback waits for cancellation completion before dispatching the next poo
   assert.equal(await f.run(), 0);
   assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled',
     'dispatch:101', 'completed:101:success']);
-  assert.deepEqual(JSON.parse(f.runs[1].payload.inputs.runner), runners[1]);
+  assert.deepEqual(JSON.parse(f.runs[1].payload.inputs.runner), gpuRunners[1]);
   assert.equal(f.outputs().attempts, '2');
   assert.equal(f.state(), null);
 });
@@ -207,7 +211,7 @@ test('queue exhaustion cancels all three attempts and fails', {timeout: 5000}, a
   assert.equal(await f.run(), 1);
   assert.equal(f.runs.length, 3);
   assert.ok(f.runs.every(run => run.conclusion === 'cancelled'));
-  assert.match(f.errors.join('\n'), /All GPU candidates exhausted/);
+  assert.match(f.errors.join('\n'), /All runner candidates exhausted/);
   assert.equal(f.state(), null);
 });
 
@@ -282,7 +286,7 @@ for (const reason of ['parent cancellation', 'source change']) {
 test('post entry point cancels using the durable state written before interruption', {timeout: 5000}, async t => {
   const f = fixture(t);
   const lib = require('../lib');
-  const active = {id: 100, request: 'gpu-7-1-interrupted'};
+  const active = {id: 100, request: 'runner-7-1-interrupted'};
   f.runs.push({id: 100, status: 'queued', job: {status: 'queued'}});
   lib.save(active);
   process.env.STATE_active = JSON.stringify(f.state());
@@ -292,9 +296,9 @@ test('post entry point cancels using the durable state written before interrupti
 
 test('post cleanup with unknown run ID cancels only the matching request', {timeout: 5000}, async t => {
   const f = fixture(t);
-  const active = {workflow: 'gpu-worker.yml', request: 'gpu-7-1-lost', created: new Date(f.now).toISOString()};
+  const active = {workflow: 'runner-worker.yml', request: 'runner-7-1-lost', created: new Date(f.now).toISOString()};
   f.runs.push(
-    {id: 100, display_title: 'gpu-7-1-unrelated', status: 'queued', job: {status: 'queued'}},
+    {id: 100, display_title: 'runner-7-1-unrelated', status: 'queued', job: {status: 'queued'}},
     {id: 101, display_title: active.request, status: 'queued', job: {status: 'queued'}},
   );
   require('../lib').save(active);
@@ -330,5 +334,73 @@ for (const condition of ['active', 'completed parent', 'stale source', 'rerun'])
     assert.equal(await f.run('../guard/index'), condition === 'active' ? 0 : 1);
     assert.equal(f.runs.length, 0);
     assert.ok(f.requests.every(request => request.method === 'GET'));
+  });
+}
+
+test('CPU primary success uses the same coordinator contract', {timeout: 5000}, async t => {
+  const f = fixture(t, cpuRunners);
+  f.onDispatch = run => f.finish(run, 'success');
+  assert.equal(await f.run(), 0);
+  assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+  assert.deepEqual(JSON.parse(f.outputs().runner), cpuRunners[0]);
+  assert.equal(f.state(), null);
+});
+
+const cpuProfiles = [
+  ['linux amd64', cpuRunners],
+  ['linux arm64', cpuRunners.map(runner => ({...runner, labels: runner.labels.replace('amd64', 'arm64')}))],
+  ['windows amd64', cpuRunners.map(runner => ({...runner, labels: runner.labels.replace('linux', 'windows')}))],
+  ['memory optimized', cpuRunners.map(runner => ({group: 'nv-cpu-memory', labels: `${runner.labels}m`}))],
+  ['general to memory optimized', [cpuRunners[0], {group: 'nv-cpu-memory', labels: 'linux-amd64-cpu32m'}]],
+  ['explicit smaller fallback', [...cpuRunners].reverse()],
+];
+for (const [profile, runners] of cpuProfiles) {
+  test(`CPU fallback between different sizes: ${profile}`, {timeout: 5000}, async t => {
+    const f = fixture(t, runners);
+    f.onDispatch = run => { if (run.id === 101) f.finish(run, 'success'); };
+    assert.equal(await f.run(), 0);
+    assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled',
+      'dispatch:101', 'completed:101:success']);
+    assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)), runners);
+    assert.deepEqual(JSON.parse(f.outputs().runner), runners[1]);
+    assert.equal(f.state(), null);
+  });
+}
+
+test('CPU queue exhaustion is bounded by the supplied labels', {timeout: 5000}, async t => {
+  const f = fixture(t, cpuRunners);
+  assert.equal(await f.run(), 1);
+  assert.equal(f.runs.length, 2);
+  assert.ok(f.runs.every(run => run.conclusion === 'cancelled'));
+  assert.match(f.errors.join('\n'), /All runner candidates exhausted/);
+  assert.equal(f.state(), null);
+});
+
+test('CPU workload failure does not retry on a larger CPU label', {timeout: 5000}, async t => {
+  const f = fixture(t, cpuRunners);
+  f.onDispatch = run => f.finish(run, 'failure');
+  assert.equal(await f.run(), 1);
+  assert.equal(f.runs.length, 1);
+  assert.match(f.errors.join('\n'), /no workload retry/);
+});
+
+const invalidRunners = [
+  ['mixed CPU/GPU', [cpuRunners[0], gpuRunners[0]], /CPU\/GPU family/],
+  ['mixed architectures', [cpuRunners[0], {group: 'nv-cpu-general', labels: 'linux-arm64-cpu32'}], /architecture/],
+  ['mixed operating systems', [cpuRunners[0], {group: 'nv-cpu-general', labels: 'windows-amd64-cpu32'}], /OS/],
+  ['wrong CPU group', [{group: 'nv-cpu-memory', labels: 'linux-amd64-cpu16'}], /matching runner group/],
+  ['memory label in general pool', [{group: 'nv-cpu-general', labels: 'linux-amd64-cpu16m'}], /matching runner group/],
+  ['CPU label in GPU pool', [{group: 'nv-gpu-general', labels: 'linux-amd64-cpu16'}], /matching runner group/],
+  ['different GPU counts', [gpuRunners[0], {group: 'nv-gpu-amd64-h100-2gpu', labels: 'linux-amd64-gpu-h100-latest-2'}], /GPU count/],
+  ['duplicate labels', [cpuRunners[0], cpuRunners[0]], /Duplicate runner candidate/],
+  ['broad CPU label', [{group: 'nv-cpu-general', labels: 'linux-amd64'}], /specific NVIDIA CPU or GPU label/],
+];
+for (const [name, runners, expectedError] of invalidRunners) {
+  test(`reject ${name} before any API request`, {timeout: 5000}, async t => {
+    const f = fixture(t, runners);
+    assert.equal(await f.run(), 1);
+    assert.equal(f.requests.length, 0);
+    assert.equal(f.runs.length, 0);
+    assert.match(f.errors.join('\n'), expectedError);
   });
 }

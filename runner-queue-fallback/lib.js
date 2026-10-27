@@ -51,7 +51,7 @@ function client() {
           Authorization: `Bearer ${token}`,
           'X-GitHub-Api-Version': '2026-03-10',
           'Content-Type': 'application/json',
-          'User-Agent': 'spark-rapids-common-gpu-queue-fallback',
+          'User-Agent': 'runner-queue-fallback',
         },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: AbortSignal.timeout(15000),
@@ -114,8 +114,8 @@ async function snapshot(api, active) {
     throw new Error('Child run identity changed or the child workflow contract does not match');
   }
   const data = await api(`/actions/runs/${active.id}/attempts/1/jobs?per_page=100`);
-  if (data.total_count > 1 || data.jobs.some(job => job.name !== 'gpu')) {
-    throw new Error('Child workflow must contain exactly one job named gpu, without a matrix');
+  if (data.total_count > 1 || data.jobs.some(job => job.name !== 'worker')) {
+    throw new Error('Child workflow must contain exactly one job named worker, without a matrix');
   }
   if (data.jobs.some(job => !job.labels?.includes(active.runner.labels))) {
     throw new Error('Child job did not request the selected runner label');

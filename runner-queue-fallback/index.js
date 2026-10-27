@@ -36,16 +36,25 @@ function candidates() {
   const seen = new Set();
   for (const runner of runners) {
     if (!runner || Object.keys(runner).sort().join(',') !== 'group,labels' ||
-        !/^nv-gpu-[a-z0-9-]+$/.test(runner.group)) {
+        typeof runner.group !== 'string' || typeof runner.labels !== 'string') {
       throw new Error('Each candidate must have a runner group and one labels string');
     }
-    const label = typeof runner.labels === 'string' &&
-      runner.labels.match(/^(linux|windows|wsl)-(amd64|arm64)-gpu-[a-z0-9]+-(earliest|latest)-([1-9][0-9]*)$/);
-    if (!label) throw new Error('Use a specific NVIDIA GPU runner label, not a broad label list');
-    const current = `${label[1]}:${label[2]}:${label[4]}`;
-    if (shape && shape !== current) throw new Error('Fallback must preserve OS, architecture and GPU count');
+    const gpu = runner.labels.match(/^(linux|windows|wsl)-(amd64|arm64)-gpu-[a-z0-9]+-(earliest|latest)-([1-9][0-9]*)$/);
+    const cpu = runner.labels.match(/^(linux|windows)-(amd64|arm64)-cpu([1-9][0-9]*)(m?)$/);
+    let current;
+    if (gpu && /^nv-gpu-[a-z0-9-]+$/.test(runner.group)) {
+      current = `${gpu[1]}:${gpu[2]}:gpu:${gpu[4]}`;
+    } else if (cpu && runner.group === (cpu[4] ? 'nv-cpu-memory' : 'nv-cpu-general')) {
+      // CPU sizes may differ; the caller must choose candidates that meet the workload's needs.
+      current = `${cpu[1]}:${cpu[2]}:cpu`;
+    } else {
+      throw new Error('Use a specific NVIDIA CPU or GPU label with its matching runner group');
+    }
+    if (shape && shape !== current) {
+      throw new Error('Fallback must preserve OS, architecture, CPU/GPU family and GPU count');
+    }
     shape = current;
-    if (seen.has(runner.labels)) throw new Error('Duplicate GPU candidate');
+    if (seen.has(runner.labels)) throw new Error('Duplicate runner candidate');
     seen.add(runner.labels);
   }
   return runners;
@@ -92,7 +101,7 @@ async function main() {
       }
       active = {
         workflow, workflowSha, runner: runners[i],
-        request: `gpu-${parentId}-${parentAttempt}-${randomUUID()}`,
+        request: `runner-${parentId}-${parentAttempt}-${randomUUID()}`,
         // Run timestamps have second precision; allow for rounding and small clock skew.
         created: new Date(Date.now() - 60000).toISOString(),
       };
@@ -132,17 +141,17 @@ async function main() {
         if (run.status === 'completed') {
           report(active, `completed: ${run.conclusion}`, undefined);
           if (run.conclusion !== 'success' || job?.conclusion !== 'success' || !startedAt) {
-            throw new Error(`GPU child ${active.id}: ${run.conclusion}; no workload retry`);
+            throw new Error(`Worker ${active.id}: ${run.conclusion}; no workload retry`);
           }
           await ensureCurrent();
           active = null;
           save(null);
           return;
         }
-        if (!job && Date.now() > jobDeadline) throw new Error('GPU job was not created; no fallback');
+        if (!job && Date.now() > jobDeadline) throw new Error('Worker job was not created; no fallback');
         if (startedAt) {
           if (Date.now() - startedAt >= executionLimit) {
-            throw new Error(`GPU child ${active.id}: execution timeout; no fallback`);
+            throw new Error(`Worker ${active.id}: execution timeout; no fallback`);
           }
         } else if (job?.status === 'queued') {
           queuedAt ??= Date.now();
@@ -169,7 +178,7 @@ async function main() {
         await sleep(startedAt ? 120000 : 60000);
       }
     }
-    throw new Error('All GPU candidates exhausted their queue deadlines');
+    throw new Error('All runner candidates exhausted their queue deadlines');
   } catch (error) {
     // Keep the primary failure visible even if cleanup encounters a separate API error.
     fail(error);

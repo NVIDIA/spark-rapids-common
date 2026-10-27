@@ -1,34 +1,34 @@
-# GPU queue fallback
+# Runner queue fallback
 
-Use a preferred GPU pool, then try the next compatible pool **only when a runner
+Use a preferred CPU or GPU pool, then try the next compatible pool **only when a runner
 has not been acquired within the queue deadline**. Each repository keeps its own
-GPU commands; this action owns dispatch, queue monitoring, cancellation and results.
+workload commands; this action owns dispatch, queue monitoring, cancellation and results.
 No Spark, JNI, cuML or NVFlare build logic is embedded here.
 
 ## Consumer setup
 
 Add two small workflows in the consuming repository:
 
-1. A trusted CPU coordinator calls `NVIDIA/spark-rapids-common/gpu-queue-fallback`.
-2. A dedicated `workflow_dispatch` child contains exactly one job named `gpu`.
+1. A trusted CPU coordinator calls `NVIDIA/spark-rapids-common/runner-queue-fallback`.
+2. A dedicated `workflow_dispatch` child contains exactly one job named `worker`.
    It accepts the seven inputs below and uses the shared guard before workload code.
 
 No copied polling scripts, GitHub App or PAT are needed. The coordinator uses its
 repository's `GITHUB_TOKEN` with `actions: write`; the child uses only read access.
 Runner access belongs to the **consuming repository**, not to common. All selected
-groups must already be granted to that repository. Common and tools currently
-have the general pool only; they can start with a single candidate.
+groups must already be granted to that repository. Having access to a general pool
+does not grant access to the memory-optimized CPU or GPU-specific groups.
 
-The examples below are a manually triggered, one-GPU sanity pilot. They do not
+The examples below are a manually triggered, one-worker CPU sanity pilot. They do not
 enable automatic PR runs. Install both workflow files on the default branch before
 dispatching. Pin both common actions to the same reviewed commit in production;
 `@main` is shown for readability. Use only trusted workflow definitions, never
 dispatch the child definition from an untrusted PR branch.
 
-### Coordinator: `.github/workflows/gpu-check.yml`
+### Coordinator: `.github/workflows/runner-check.yml`
 
 ```yaml
-name: GPU check
+name: Runner check
 on:
   workflow_dispatch:
     inputs:
@@ -43,19 +43,19 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: gpu-pilot
+  group: runner-pilot
   cancel-in-progress: false
 jobs:
-  gpu-check:
+  runner-check:
     runs-on: ubuntu-latest
     timeout-minutes: 55
     permissions:
       contents: read
       actions: write
     steps:
-      - uses: NVIDIA/spark-rapids-common/gpu-queue-fallback@main
+      - uses: NVIDIA/spark-rapids-common/runner-queue-fallback@main
         with:
-          workflow: gpu-worker.yml
+          workflow: runner-worker.yml
           workflow-ref: main
           source-ref: ${{ inputs.source-ref }}
           source-sha: ${{ inputs.source-sha }}
@@ -63,9 +63,8 @@ jobs:
           execution-timeout-minutes: '15'
           runners: >-
             [
-              {"group":"nv-gpu-amd64-rtxpro6000-1gpu","labels":"linux-amd64-gpu-rtxpro6000-latest-1"},
-              {"group":"nv-gpu-amd64-h100-1gpu","labels":"linux-amd64-gpu-h100-latest-1"},
-              {"group":"nv-gpu-general","labels":"linux-amd64-gpu-l4-latest-1"}
+              {"group":"nv-cpu-general","labels":"linux-amd64-cpu16"},
+              {"group":"nv-cpu-general","labels":"linux-amd64-cpu32"}
             ]
 ```
 
@@ -76,10 +75,10 @@ source SHA. When adding PR integration, retain the existing full-SHA approval ga
 and attach the parent result to the intended source revision. This action does not
 implement approval or post commit statuses. A read-only fork PR token cannot dispatch.
 
-### Child: `.github/workflows/gpu-worker.yml`
+### Child: `.github/workflows/runner-worker.yml`
 
 ```yaml
-name: GPU worker
+name: Runner worker
 run-name: ${{ inputs.request-id }}
 on:
   workflow_dispatch:
@@ -109,12 +108,12 @@ permissions:
   contents: read
   actions: read
 jobs:
-  gpu:
-    name: gpu
+  worker:
+    name: worker
     runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 15
     steps:
-      - uses: NVIDIA/spark-rapids-common/gpu-queue-fallback/guard@main
+      - uses: NVIDIA/spark-rapids-common/runner-queue-fallback/guard@main
         with:
           request-id: ${{ inputs.request-id }}
           parent-run-id: ${{ inputs.parent-run-id }}
@@ -125,33 +124,58 @@ jobs:
         with:
           ref: ${{ inputs.source-sha }}
           persist-credentials: false
-      - name: GPU sanity
-        run: nvidia-smi
+      - name: Workload
+        run: node -p "process.platform + '/' + process.arch"
 ```
 
-Replace only `GPU sanity` with the repository's existing workload steps. No child
+Replace only `Workload` with the repository's existing workload steps. No child
 matrix, `needs`, environment approvals, job-level conditional skips, or concurrency
-queue: this workflow isolates exactly one GPU allocation so cancelling it cannot
-cancel CPU builds or unrelated jobs. Do not rerun a child directly; rerun its parent.
+queue: this workflow isolates exactly one worker allocation so cancelling it cannot
+cancel upstream builds or unrelated jobs. Do not rerun a child directly; rerun its parent.
 
-For real workloads, prepare CPU artifacts **before** the coordinator. Pass an
+### Choosing CPU or GPU labels
+
+The CPU example tries `linux-amd64-cpu16`, then `linux-amd64-cpu32` in
+`nv-cpu-general`. CPU sizes may differ because each candidate is explicitly chosen
+by the caller. Memory-optimized labels such as `linux-amd64-cpu16m` require the
+matching `nv-cpu-memory` group and separate access. Nothing silently adds a larger
+instance or a memory-optimized pool.
+
+For a GPU workload, use the same action and worker contract, replacing `runners`
+with an approved GPU sequence, for example:
+
+```json
+[
+  {"group":"nv-gpu-amd64-rtxpro6000-1gpu","labels":"linux-amd64-gpu-rtxpro6000-latest-1"},
+  {"group":"nv-gpu-amd64-h100-1gpu","labels":"linux-amd64-gpu-h100-latest-1"},
+  {"group":"nv-gpu-general","labels":"linux-amd64-gpu-l4-latest-1"}
+]
+```
+
+Replace `Workload` with the GPU workload steps; `nvidia-smi` can be the initial GPU
+sanity check. Never mix CPU and GPU candidates in one sequence. A CPU-only job and
+a GPU job each use their own coordinator invocation and workload workflow.
+
+For real workloads, prepare any upstream artifacts **before** the coordinator. Pass an
 immutable artifact producer run ID, artifact name and public GHCR image digest in
 the optional `workload` JSON object. Decode it using `fromJSON(inputs.workload)` in
 the child to download that exact artifact or select the image. Common forwards the
 object unchanged; it neither executes commands from it nor reads artifacts. Do not
 pass secrets in dispatch inputs. The child must verify artifact/source provenance,
-keep publishing credentials out of the GPU job, and not use `continue-on-error` to
+keep publishing credentials out of the worker job, and not use `continue-on-error` to
 turn required test failures into success. Public GHCR images need no registry login.
 
 ## Behavior and limits
 
 - One to three candidates, in the supplied order, never concurrent. Default queue
   deadline: 10 minutes each. Override from 1 to 30 minutes. The queue clock starts
-  when the single GPU job is first observed queued, not during CPU preparation.
-- NVIDIA runner labels must preserve OS, architecture and GPU count. The caller
-  must additionally validate VRAM, CUDA/driver compatibility and compiled GPU
-  architectures across candidates. Hardware-specific checks and benchmarks should
-  use one candidate, not fallback to a different GPU.
+  when the single worker job is first observed queued, not during upstream preparation.
+- NVIDIA runner labels must preserve OS, architecture and CPU/GPU family. GPU
+  candidates must also preserve GPU count. CPU core counts may differ. The caller
+  must ensure **every** candidate meets its minimum CPU, RAM and disk requirements,
+  including any smaller fallback size. For GPUs, additionally validate VRAM,
+  CUDA/driver compatibility and compiled GPU architectures. Hardware-specific checks
+  and benchmarks should use one candidate, not fallback to different hardware.
 - Once runner allocation or step execution is observed, fallback is disabled.
   Container setup, GPU initialization, compilation, tests and execution timeouts
   are **not retried**. No skipped, missing, cancelled or unsuccessful required job
@@ -171,7 +195,7 @@ turn required test failures into success. Public GHCR images need no registry lo
   API outages can prevent cleanup; a child already executing then relies on its
   own `timeout-minutes`. Check the reported run ID if cleanup cannot be confirmed.
 - Set the parent timeout above all queue budgets, one execution budget and cleanup
-  time. The example allows 55 minutes for 30 minutes of queueing, 15 minutes of
+  time. The example allows 55 minutes for up to 30 minutes of queueing, 15 minutes of
   execution and overhead. Defaults allow 180 minutes of execution; a longer real
   workload needs correspondingly larger parent and child timeouts.
 - Logs and the parent step summary report candidates, observed waits, child links
@@ -195,13 +219,13 @@ by the unique `run-name` for cancellation, never by dispatching a duplicate.
 Run the functional suite with Node.js 24:
 
 ```sh
-node --test gpu-queue-fallback/test/*.test.js
+node --test runner-queue-fallback/test/*.test.js
 ```
 
 It exercises the coordinator, post cleanup and child guard using a fake GitHub
-API and clock. No real API calls, credentials, sleeps or GPU allocations are used.
-The hosted-CPU test workflow runs only for PRs changing `gpu-queue-fallback/**` or
-`.github/workflows/gpu-queue-fallback-test.yml`. Keep this path-filtered workflow
+API and clock. No real API calls, credentials, sleeps or worker allocations are used.
+The hosted-CPU test workflow runs only for PRs changing `runner-queue-fallback/**` or
+`.github/workflows/runner-queue-fallback-test.yml`. Keep this path-filtered workflow
 non-required globally so unrelated PRs are not blocked by an absent check.
 
 Do not enable broad PR traffic until a bounded pilot proves primary success, queue

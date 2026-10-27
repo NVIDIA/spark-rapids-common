@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: GPU child guard
-description: Reject stale or orphaned GPU children before checking out workload code
+name: Runner child guard
+description: Reject stale or orphaned CPU or GPU workers before checking out workload code
 inputs:
   github-token:
     description: Same-repository token with actions read and contents read permissions

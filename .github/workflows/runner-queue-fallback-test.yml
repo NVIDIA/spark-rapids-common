@@ -12,19 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: GPU queue fallback tests
+name: Runner queue fallback tests
 
 on:
   pull_request:
     paths:
-      - 'gpu-queue-fallback/**'
-      - '.github/workflows/gpu-queue-fallback-test.yml'
+      - 'runner-queue-fallback/**'
+      - '.github/workflows/runner-queue-fallback-test.yml'
 
 permissions:
   contents: read
 
 concurrency:
-  group: gpu-queue-fallback-tests-${{ github.event.pull_request.number }}
+  group: runner-queue-fallback-tests-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -41,5 +41,5 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Test queue fallback without GPU runners or GitHub API calls
-        run: node --test gpu-queue-fallback/test/*.test.js
+      - name: Test CPU and GPU fallback without real dispatches or GitHub API calls
+        run: node --test runner-queue-fallback/test/*.test.js

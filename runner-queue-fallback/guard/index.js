@@ -14,14 +14,20 @@
 
 'use strict';
 
-const {client, cleanup, fail} = require('./lib');
+const {input, client, parentActive, currentSource, fail} = require('../lib');
 
 async function main() {
-  const active = JSON.parse(process.env.STATE_active || 'null');
-  if (active) {
-    console.log(`Cleaning up GPU request ${active.request}`);
-    await cleanup(client(), active);
+  const api = client();
+  const id = input('parent-run-id');
+  const attempt = input('parent-run-attempt');
+  const request = input('request-id');
+  if (process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || process.env.GITHUB_RUN_ATTEMPT !== '1' ||
+      process.env.GITHUB_RUN_ID === id || !request.startsWith(`runner-${id}-${attempt}-`)) {
+    throw new Error('Worker must be a fresh coordinator dispatch, not a rerun');
   }
+  await parentActive(api, id, attempt);
+  await currentSource(api, input('source-ref'), input('source-sha'));
+  console.log('Parent active and approved source unchanged');
 }
 
 if (require.main === module) main().catch(fail);
