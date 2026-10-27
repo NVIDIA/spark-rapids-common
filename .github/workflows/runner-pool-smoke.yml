@@ -14,7 +14,7 @@
 
 name: Runner pool smoke test
 
-# The mirrored PR-head SHA reports these checks directly on the original PR.
+# copy-pr-bot mirrors the exact PR head approved with /ok to test <full SHA>.
 on:
   push:
     branches:
@@ -29,10 +29,15 @@ concurrency:
 
 jobs:
   smoke:
-    if: github.repository == 'NVIDIA/spark-rapids-common'
+    if: >-
+      github.repository == 'NVIDIA/spark-rapids-common' &&
+      github.actor == 'copy-pr-bot[bot]'
     name: ${{ matrix.pool }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
     strategy:
       fail-fast: false
       matrix:
@@ -44,7 +49,7 @@ jobs:
             runner: linux-amd64-gpu-l4-latest-1
             gpu: true
     env:
-      SMOKE_IMAGE: signoff-check:runner-smoke
+      SIGNOFF_IMAGE: ghcr.io/nvidia/spark-rapids-common/signoff-check@sha256:3db01d81815231e0a68c998a7b931602e888806ef32656483fe884dd55b184d8
     steps:
       - name: Checkout the tested revision
         uses: NVIDIA/spark-rapids-common/checkout@main
@@ -58,21 +63,29 @@ jobs:
           uname -sm
           nproc
           docker version
-      - name: Build and run the signoff runtime locally
+      - name: Identify the approved PR
+        id: pr
         shell: bash
         run: |
           set -euo pipefail
-          docker build --pull --tag "$SMOKE_IMAGE" signoff-check
-          docker run --rm "$SMOKE_IMAGE" --help
-          docker run --rm --interactive --entrypoint python "$SMOKE_IMAGE" - --help \
-            < signoff-check/signoff-check
+          pr_number=${GITHUB_REF_NAME#pull-request/}
+          [[ "$pr_number" =~ ^[0-9]+$ ]]
+          echo "number=$pr_number" >> "$GITHUB_OUTPUT"
+      - name: Validate PR signoff using the published image
+        uses: ./signoff-check
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: ${{ github.event.repository.name }}
+          pull_number: ${{ steps.pr.outputs.number }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          image: ${{ env.SIGNOFF_IMAGE }}
       - name: Check GPU access on the host and in Docker
         if: matrix.gpu
         shell: bash
         run: |
           set -euo pipefail
           nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
-          docker run --rm --gpus all --entrypoint nvidia-smi "$SMOKE_IMAGE" \
+          docker run --rm --gpus all --entrypoint nvidia-smi "$SIGNOFF_IMAGE" \
             --query-gpu=name,driver_version,memory.total --format=csv
 
   publish-preview:

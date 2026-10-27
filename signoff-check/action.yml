@@ -18,19 +18,15 @@ inputs:
   owner:
     description: "Repository Owner"
     required: true
-    type: string
   repo:
     description: "Repository name"
     required: true
-    type: string
   pull_number:
     description: "Pull request number"
     required: true
-    type: string
   token:
     description: "GitHub token"
     required: true
-    type: string
   image:
     description: "Public signoff runtime image; an explicit tag or digest must be accessible"
     required: false

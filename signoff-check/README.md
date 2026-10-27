@@ -38,7 +38,7 @@ is granted. Production `v1` publication is restricted to `main` and requires
 anonymous pulls to succeed. Fork workflows cannot publish.
 
 The PR workflow also calls this publisher after both runner smoke jobs pass.
-Reviewed `pull-request/<number>` branches publish an amd64/arm64 preview as
+Bot-approved `pull-request/<number>` branches publish an amd64/arm64 preview as
 `ghcr.io/nvidia/spark-rapids-common/signoff-check:pr-<number>`, without changing
 `v1`. Both platforms pass CLI smoke checks before the preview tag is updated.
 If the new package is still private, the preview uses authenticated pulls for
@@ -66,28 +66,43 @@ The `Runner pool smoke test` workflow runs two independent jobs:
 - `nv-cpu-general`: `linux-amd64-cpu16`.
 - `nv-gpu-general`: `linux-amd64-gpu-l4-latest-1`, including host and Docker GPU access.
 
-Both build the signoff runtime locally and check its CLI and stdin-based script
-execution, with read-only repository permissions. After both pass, a separate
-CPU job publishes the PR preview using only the built-in `GITHUB_TOKEN` with
-`packages: write`; no PAT or additional secret is required.
+Both call the PR's local `signoff-check` action against the actual pull request,
+using the already-published preview pinned by digest. The action pulls the image
+anonymously and executes the signoff script from the approved checkout. These
+checks do not rebuild the runtime or substitute a local build if the pull fails.
+Only read access to repository contents and pull requests is needed. After both
+pass, a separate CPU job publishes the PR preview using only the built-in
+`GITHUB_TOKEN` with `packages: write`; no PAT or additional secret is required.
 
 The workflow runs on `pull-request/<number>` branches in the NVIDIA repository,
 using the exact reviewed PR-head commit. GitHub attaches the resulting CPU and
 GPU checks to that PR, so validation does not require merging the PR or the
 workflow into `main`.
 
-Normally, the platform's `copy-pr-bot` creates and updates these branches. Until
-that app is enabled for this repository, a maintainer can use the documented
-manual equivalent. For PR #65, from its reviewed checkout:
+Before validating the approval flow, ensure `copy-pr-bot` is installed for this
+repository and `.github/copy-pr-bot.yaml` is present on `main`. A configuration
+file on a PR does not activate the bot. The configuration-only setup can be
+merged separately while the workflow change stays unmerged.
 
-```sh
-git push https://github.com/NVIDIA/spark-rapids-common.git HEAD:refs/heads/pull-request/65
+With automatic syncing disabled and `trustees_override: []`, every PR head,
+including maintainer-authored changes, needs a vetter's approval. Review the
+latest changes, then post this comment on the PR, replacing the placeholder
+with its full 40-character head SHA:
+
+```text
+/ok to test <full 40-character head SHA>
 ```
 
-Read `nv-cpu-general` and `nv-gpu-general` in the PR's Checks tab. Each new PR-head
-commit needs to be reviewed and mirrored again until the bot is enabled.
-Managed runners reject `pull_request` and `pull_request_target` events; this
-trusted-commit process is the platform's supported PR-testing mechanism.
+The bot acknowledges a successful command with a thumbs-up reaction and mirrors
+that approved commit. Read `nv-cpu-general` and `nv-gpu-general` in the PR's
+Checks tab. Bare commands, abbreviated SHAs, and stale SHAs do not approve the
+latest head; every new commit needs a new approval. Manual branch pushes no
+longer start the managed tests or PR publication: both workflows require the
+push actor to be `copy-pr-bot[bot]`.
+
+Existing GitHub-hosted lint and PR-metadata checks remain automatic. Managed
+runners reject `pull_request` and `pull_request_target` events; the bot's
+approved-head push is the supported trigger for these CPU/GPU checks.
 
 ## Usage
 
