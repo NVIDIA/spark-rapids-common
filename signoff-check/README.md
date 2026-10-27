@@ -84,20 +84,25 @@ repository and `.github/copy-pr-bot.yaml` is present on `main`. A configuration
 file on a PR does not activate the bot. The configuration-only setup can be
 merged separately while the workflow change stays unmerged.
 
-With automatic syncing disabled and `trustees_override: []`, every PR head,
-including maintainer-authored changes, needs a vetter's approval. Review the
-latest changes, then post this comment on the PR, replacing the placeholder
-with its full 40-character head SHA:
+Automatic syncing is disabled for both draft and ready PRs. The bot's default
+trust and vetter rules apply: an organization member can approve trusted PRs
+with `/ok to test`; PRs with untrusted changes require a vetter's approval with
+the full latest head SHA. Trust depends on the PR author, committers, and verified
+commit signatures; a DCO signoff alone does not make a commit trusted.
+
+Review the latest changes, then post this comment on the PR, replacing the
+placeholder with its full 40-character head SHA:
 
 ```text
 /ok to test <full 40-character head SHA>
 ```
 
 The bot acknowledges a successful command with a thumbs-up reaction and mirrors
-that approved commit. Read `nv-cpu-general` and `nv-gpu-general` in the PR's
-Checks tab. Bare commands, abbreviated SHAs, and stale SHAs do not approve the
-latest head; every new commit needs a new approval. Manual branch pushes no
-longer start the managed tests or PR publication: both workflows require the
+the latest PR head. Read `nv-cpu-general` and `nv-gpu-general` in the PR's Checks
+tab. For untrusted changes, bare commands, abbreviated SHAs, and stale SHAs are
+rejected; trusted PRs do not enforce SHA matching. Every new commit needs another
+approval comment because automatic syncing is disabled. Manual branch pushes
+do not start the managed tests or PR publication: both workflows require the
 push actor to be `copy-pr-bot[bot]`.
 
 Existing GitHub-hosted lint and PR-metadata checks remain automatic. Managed
