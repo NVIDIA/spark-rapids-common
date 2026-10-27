@@ -1,5 +1,3 @@
 enabled: true
 auto_sync_draft: false
 auto_sync_ready: false
-# Require a full-head-SHA approval even for maintainer-authored PRs.
-trustees_override: []
