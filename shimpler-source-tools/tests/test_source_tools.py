@@ -198,10 +198,11 @@ class SourceToolsTest(unittest.TestCase):
 
     def test_same_minor_carries_to_patch_but_not_next_minor(self):
         graph = {'404': None, '405': '404', '411': '404', '413': '411',
-                 '414': '413', '420': None, '421': '420', '500': '420'}
+                 '414': '413', '420': '413', '421': '420', '430': '421',
+                 '500': '420'}
         for owner, child, next_minor in (('404', '405', '411'),
                                          ('413', '414', '420'),
-                                         ('420', '421', '500')):
+                                         ('420', '421', '430')):
             with self.subTest(owner=owner):
                 name = 'Patch' + owner + '.scala'
                 shared = self.source(owner, name,
