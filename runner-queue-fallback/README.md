@@ -167,18 +167,30 @@ turn required test failures into success. Public GHCR images need no registry lo
 
 ### Daily image build
 
-The repository's [daily image workflow](../.github/workflows/image-build.yml) uses
-this action for its signoff image. It tries `linux-amd64-cpu16`, `cpu8`, `cpu4`, then
+The repository's [daily image workflow](../.github/workflows/image-build.yml) reads
+its image matrix from the [image catalog](../.github/image-builds.json), currently
+containing the signoff image. It tries `linux-amd64-cpu16`, `cpu8`, `cpu4`, then
 `cpu32`, all in `nv-cpu-general`, with a **10-minute queue timeout per candidate**.
 Only one managed worker runs at a time. Memory-optimized groups are not enabled for
 this repository, and ARM runners are intentionally excluded from this sequence.
 
 The [image worker](../.github/workflows/image-build-worker.yml) retains the existing
-30-minute build limit. It builds both `linux/amd64` and `linux/arm64` on the same
-x86 node using Buildx and QEMU, checks anonymous pulls and CLI startup on both, then
-promotes the verified digest to `v1`. Emulated compilation is supported but may be
+30-minute build limit. It builds the configured platforms on the same x86 node
+using Buildx and QEMU, checks anonymous pulls and runs the image's smoke script,
+then promotes the verified digest to its configured tag. The signoff entry retains
+both `linux/amd64` and `linux/arm64`, its two CLI checks, and the `v1` tag.
+Emulated compilation is supported but may be
 much slower than native compilation; a future heavy build can use separate native
 architecture workers without relaxing the shared action's architecture checks.
+
+To add an image, add a catalog entry with its build context, Dockerfile, supported
+platforms (`linux/amd64` and/or `linux/arm64`), tag, and smoke-test script. The catalog
+key becomes `ghcr.io/<owner>/<repository>/<key>` (lowercase). No workflow edits are
+needed. The smoke script receives the immutable image reference and platform as
+its two arguments and must fail on a failed check. Image-specific checks belong
+beside that image, not in the generic worker. Only the image key is dispatched;
+the worker reads build paths, tags, and scripts from its trusted checkout, not from
+arbitrary dispatch inputs. The parent matrix is serialized to avoid flooding pools.
 
 Unlike a PR test worker, this is a trusted publishing workload: it checks out only
 the dispatch's `main` SHA, rejects any different source, and uses `packages: write`

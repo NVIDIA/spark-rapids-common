@@ -27,11 +27,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  signoff-check:
-    name: Signoff check image
+  configure:
     if: >-
       github.repository == 'NVIDIA/spark-rapids-common' &&
       github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      images: ${{ steps.catalog.outputs.images }}
+    steps:
+      - name: Checkout image catalog
+        uses: NVIDIA/spark-rapids-common/checkout@main
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Read configured images
+        id: catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          images=$(jq -ce 'keys | select(length > 0)' .github/image-builds.json)
+          printf 'images=%s\n' "$images" >> "$GITHUB_OUTPUT"
+
+  images:
+    name: Build ${{ matrix.image }}
+    needs: configure
+    strategy:
+      max-parallel: 1
+      matrix:
+        image: ${{ fromJSON(needs.configure.outputs.images) }}
     runs-on: ubuntu-latest
     # Four 10-minute queues, one 30-minute build, and cancellation/API overhead.
     timeout-minutes: 90
@@ -51,6 +75,7 @@ jobs:
           workflow-ref: main
           source-ref: ${{ github.ref }}
           source-sha: ${{ github.sha }}
+          workload: ${{ toJSON(matrix) }}
           queue-timeout-minutes: '10'
           execution-timeout-minutes: '30'
           runners: >-

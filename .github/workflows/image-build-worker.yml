@@ -81,6 +81,17 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Select image from the trusted catalog
+        id: image
+        shell: bash
+        env:
+          IMAGE_NAME: ${{ fromJSON(inputs.workload).image }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_NAME" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]
+          config=$(jq -ce --arg name "$IMAGE_NAME" \
+            '.[$name] | select(type == "object")' .github/image-builds.json)
+          printf 'config=%s\n' "$config" >> "$GITHUB_OUTPUT"
       - name: Set up emulation
         uses: docker/setup-qemu-action@v4.4.0
         with:
@@ -92,32 +103,46 @@ jobs:
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
-          IMAGE: ghcr.io/nvidia/spark-rapids-common/signoff-check
+          IMAGE_NAME: ${{ fromJSON(inputs.workload).image }}
+          BUILD_CONTEXT: ${{ fromJSON(steps.image.outputs.config).context }}
+          DOCKERFILE: ${{ fromJSON(steps.image.outputs.config).dockerfile }}
+          PLATFORMS: ${{ join(fromJSON(steps.image.outputs.config).platforms, ',') }}
+          PUBLISH_TAG: ${{ fromJSON(steps.image.outputs.config).tag }}
+          SMOKE_TEST: ${{ fromJSON(steps.image.outputs.config).smoke-test }}
         run: |
           set -euo pipefail
+          [[ -d "$BUILD_CONTEXT" && -f "$DOCKERFILE" && -f "$SMOKE_TEST" ]]
+          [[ "$PUBLISH_TAG" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]]
+          IFS=, read -r -a platforms <<< "$PLATFORMS"
+          (( ${#platforms[@]} > 0 ))
+          for platform in "${platforms[@]}"; do
+            case "$platform" in
+              linux/amd64|linux/arm64) ;;
+              *) echo "::error::Unsupported image platform: $platform"; exit 1 ;;
+            esac
+          done
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}/$IMAGE_NAME"
           anonymous_config=$(mktemp -d)
           metadata=$(mktemp)
           trap 'docker logout ghcr.io; rm -rf "$anonymous_config"; rm -f "$metadata"' EXIT
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
 
           candidate="$IMAGE:build-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          docker buildx build --pull --platform linux/amd64,linux/arm64 \
+          docker buildx build --pull --platform "$PLATFORMS" --file "$DOCKERFILE" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --tag "$candidate" --metadata-file "$metadata" --push signoff-check
+            --tag "$candidate" --metadata-file "$metadata" --push "$BUILD_CONTEXT"
           digest=$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' "$metadata")
           reference="$IMAGE@$digest"
 
           # A public repository does not make a newly created GHCR package public.
-          for platform in linux/amd64 linux/arm64; do
+          for platform in "${platforms[@]}"; do
             if ! docker --config "$anonymous_config" pull --platform "$platform" "$reference"; then
-              echo "::error::Anonymous image pull failed. Verify GHCR availability and public package visibility, then rerun. The v1 tag has not been updated."
+              echo "::error::Anonymous image pull failed. Verify GHCR availability and public package visibility, then rerun. The $PUBLISH_TAG tag has not been updated."
               exit 1
             fi
-            docker run --rm --platform "$platform" "$reference" --help
-            docker run --rm --interactive --platform "$platform" \
-              --entrypoint python "$reference" - --help < signoff-check/signoff-check
+            bash "$SMOKE_TEST" "$reference" "$platform"
           done
 
-          docker buildx imagetools create --tag "$IMAGE:v1" "$reference"
-          printf 'Published %s:v1 from %s. Both platforms passed anonymous pulls and CLI smoke checks.\n' \
-            "$IMAGE" "$reference" >> "$GITHUB_STEP_SUMMARY"
+          docker buildx imagetools create --tag "$IMAGE:$PUBLISH_TAG" "$reference"
+          printf 'Published %s:%s from %s. Configured platforms passed anonymous pulls and image smoke checks.\n' \
+            "$IMAGE" "$PUBLISH_TAG" "$reference" >> "$GITHUB_STEP_SUMMARY"
