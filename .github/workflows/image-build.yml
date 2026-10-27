@@ -32,54 +32,31 @@ jobs:
     if: >-
       github.repository == 'NVIDIA/spark-rapids-common' &&
       github.ref == 'refs/heads/main'
-    runs-on: linux-amd64-cpu16
-    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    # Four 10-minute queues, one 30-minute build, and cancellation/API overhead.
+    timeout-minutes: 90
     permissions:
       contents: read
-      packages: write
+      actions: write
     steps:
-      - name: Checkout image source
+      - name: Checkout trusted coordinator
         uses: NVIDIA/spark-rapids-common/checkout@main
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Set up emulation
-        uses: docker/setup-qemu-action@v4.4.0
+      - name: Build image with CPU queue fallback
+        uses: ./runner-queue-fallback
         with:
-          platforms: arm64
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.4.1
-      - name: Build, verify, and publish
-        shell: bash
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_USER: ${{ github.actor }}
-          IMAGE: ghcr.io/nvidia/spark-rapids-common/signoff-check
-        run: |
-          set -euo pipefail
-          anonymous_config=$(mktemp -d)
-          metadata=$(mktemp)
-          trap 'docker logout ghcr.io; rm -rf "$anonymous_config"; rm -f "$metadata"' EXIT
-          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
-
-          candidate="$IMAGE:build-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          docker buildx build --pull --platform linux/amd64,linux/arm64 \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
-            --tag "$candidate" --metadata-file "$metadata" --push signoff-check
-          digest=$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' "$metadata")
-          reference="$IMAGE@$digest"
-
-          # A public repository does not make a newly created GHCR package public.
-          for platform in linux/amd64 linux/arm64; do
-            if ! docker --config "$anonymous_config" pull --platform "$platform" "$reference"; then
-              echo "::error::Anonymous image pull failed. Verify GHCR availability and public package visibility, then rerun. The v1 tag has not been updated."
-              exit 1
-            fi
-            docker run --rm --platform "$platform" "$reference" --help
-            docker run --rm --interactive --platform "$platform" \
-              --entrypoint python "$reference" - --help < signoff-check/signoff-check
-          done
-
-          docker buildx imagetools create --tag "$IMAGE:v1" "$reference"
-          printf 'Published %s:v1 from %s. Both platforms passed anonymous pulls and CLI smoke checks.\n' \
-            "$IMAGE" "$reference" >> "$GITHUB_STEP_SUMMARY"
+          workflow: image-build-worker.yml
+          workflow-ref: main
+          source-ref: ${{ github.ref }}
+          source-sha: ${{ github.sha }}
+          queue-timeout-minutes: '10'
+          execution-timeout-minutes: '30'
+          runners: >-
+            [
+              {"group":"nv-cpu-general","labels":"linux-amd64-cpu16"},
+              {"group":"nv-cpu-general","labels":"linux-amd64-cpu8"},
+              {"group":"nv-cpu-general","labels":"linux-amd64-cpu4"},
+              {"group":"nv-cpu-general","labels":"linux-amd64-cpu32"}
+            ]

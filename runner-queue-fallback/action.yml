@@ -31,7 +31,7 @@ inputs:
     description: Full approved source SHA; must match source-ref throughout the run
     required: true
   runners:
-    description: Ordered JSON array of up to three compatible CPU or GPU runner objects with group and labels
+    description: Ordered JSON array of up to four compatible CPU or GPU runner objects with group and labels
     required: true
   workload:
     description: JSON object passed unchanged to the child, such as image digest and artifact run ID

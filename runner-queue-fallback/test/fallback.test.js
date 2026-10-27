@@ -376,6 +376,27 @@ test('CPU queue exhaustion is bounded by the supplied labels', {timeout: 5000}, 
   assert.equal(f.state(), null);
 });
 
+test('four x86 CPU sizes use ten-minute queues and cancel before each switch', {timeout: 5000}, async t => {
+  const runners = [16, 8, 4, 32].map(size => ({
+    group: 'nv-cpu-general', labels: `linux-amd64-cpu${size}`,
+  }));
+  const f = fixture(t, runners);
+  process.env['INPUT_QUEUE-TIMEOUT-MINUTES'] = '10';
+  const started = f.now;
+  f.onDispatch = run => { if (run.id === 103) f.finish(run, 'success'); };
+  assert.equal(await f.run(), 0);
+  assert.equal(f.now - started, 3 * 10 * 60000);
+  assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)), runners);
+  assert.deepEqual(f.events, [
+    'dispatch:100', 'cancel:100', 'completed:100:cancelled',
+    'dispatch:101', 'cancel:101', 'completed:101:cancelled',
+    'dispatch:102', 'cancel:102', 'completed:102:cancelled',
+    'dispatch:103', 'completed:103:success',
+  ]);
+  assert.equal(f.outputs().attempts, '4');
+  assert.equal(f.state(), null);
+});
+
 test('CPU workload failure does not retry on a larger CPU label', {timeout: 5000}, async t => {
   const f = fixture(t, cpuRunners);
   f.onDispatch = run => f.finish(run, 'failure');
@@ -385,6 +406,7 @@ test('CPU workload failure does not retry on a larger CPU label', {timeout: 5000
 });
 
 const invalidRunners = [
+  ['more than four candidates', [...cpuRunners, ...gpuRunners], /one to four candidates/],
   ['mixed CPU/GPU', [cpuRunners[0], gpuRunners[0]], /CPU\/GPU family/],
   ['mixed architectures', [cpuRunners[0], {group: 'nv-cpu-general', labels: 'linux-arm64-cpu32'}], /architecture/],
   ['mixed operating systems', [cpuRunners[0], {group: 'nv-cpu-general', labels: 'windows-amd64-cpu32'}], /OS/],

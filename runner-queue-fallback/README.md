@@ -14,7 +14,7 @@ Add two small workflows in the consuming repository:
    It accepts the seven inputs below and uses the shared guard before workload code.
 
 No copied polling scripts, GitHub App or PAT are needed. The coordinator uses its
-repository's `GITHUB_TOKEN` with `actions: write`; the child uses only read access.
+repository's `GITHUB_TOKEN` with `actions: write`; test children use only read access.
 Runner access belongs to the **consuming repository**, not to common. All selected
 groups must already be granted to that repository. Having access to a general pool
 does not grant access to the memory-optimized CPU or GPU-specific groups.
@@ -48,7 +48,7 @@ concurrency:
 jobs:
   runner-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 65
     permissions:
       contents: read
       actions: write
@@ -165,9 +165,30 @@ pass secrets in dispatch inputs. The child must verify artifact/source provenanc
 keep publishing credentials out of the worker job, and not use `continue-on-error` to
 turn required test failures into success. Public GHCR images need no registry login.
 
+### Daily image build
+
+The repository's [daily image workflow](../.github/workflows/image-build.yml) uses
+this action for its signoff image. It tries `linux-amd64-cpu16`, `cpu8`, `cpu4`, then
+`cpu32`, all in `nv-cpu-general`, with a **10-minute queue timeout per candidate**.
+Only one managed worker runs at a time. Memory-optimized groups are not enabled for
+this repository, and ARM runners are intentionally excluded from this sequence.
+
+The [image worker](../.github/workflows/image-build-worker.yml) retains the existing
+30-minute build limit. It builds both `linux/amd64` and `linux/arm64` on the same
+x86 node using Buildx and QEMU, checks anonymous pulls and CLI startup on both, then
+promotes the verified digest to `v1`. Emulated compilation is supported but may be
+much slower than native compilation; a future heavy build can use separate native
+architecture workers without relaxing the shared action's architecture checks.
+
+Unlike a PR test worker, this is a trusted publishing workload: it checks out only
+the dispatch's `main` SHA, rejects any different source, and uses `packages: write`
+only in the worker. The hosted coordinator has no package-write permission. Do not
+reuse this privileged worker for PR code. The daily schedule and manual parent
+trigger are unchanged; rerun the parent, not the dispatched worker.
+
 ## Behavior and limits
 
-- One to three candidates, in the supplied order, never concurrent. Default queue
+- One to four candidates, in the supplied order, never concurrent. Default queue
   deadline: 10 minutes each. Override from 1 to 30 minutes. The queue clock starts
   when the single worker job is first observed queued, not during upstream preparation.
 - NVIDIA runner labels must preserve OS, architecture and CPU/GPU family. GPU
@@ -195,7 +216,7 @@ turn required test failures into success. Public GHCR images need no registry lo
   API outages can prevent cleanup; a child already executing then relies on its
   own `timeout-minutes`. Check the reported run ID if cleanup cannot be confirmed.
 - Set the parent timeout above all queue budgets, one execution budget and cleanup
-  time. The example allows 55 minutes for up to 30 minutes of queueing, 15 minutes of
+  time. The example allows 65 minutes for up to 40 minutes of queueing, 15 minutes of
   execution and overhead. Defaults allow 180 minutes of execution; a longer real
   workload needs correspondingly larger parent and child timeouts.
 - Logs and the parent step summary report candidates, observed waits, child links
@@ -230,8 +251,9 @@ non-required globally so unrelated PRs are not blocked by an absent check.
 
 Do not enable broad PR traffic until a bounded pilot proves primary success, queue
 fallback, exhaustion, product failure without retry, parent cancellation and the
-queue/start race on actual runners. This implementation alone does not migrate any
-consumer, change its existing CI, or establish a cross-repository concurrency cap.
+queue/start race on actual runners. The daily image build is the first consumer;
+no other repository workflows are migrated, and there is no cross-repository
+concurrency cap.
 
 References:
 - [Workflow dispatch API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)

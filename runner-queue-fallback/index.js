@@ -29,8 +29,8 @@ function minutes(name, maximum) {
 
 function candidates() {
   const runners = JSON.parse(input('runners'));
-  if (!Array.isArray(runners) || runners.length < 1 || runners.length > 3) {
-    throw new Error('runners must contain one to three candidates');
+  if (!Array.isArray(runners) || runners.length < 1 || runners.length > 4) {
+    throw new Error('runners must contain one to four candidates');
   }
   let shape;
   const seen = new Set();
