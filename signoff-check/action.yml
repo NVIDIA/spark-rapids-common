@@ -1,4 +1,4 @@
-# Copyright (c) 2024-2025, NVIDIA CORPORATION.
+# Copyright (c) 2024-2026, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,37 +18,49 @@ inputs:
   owner:
     description: "Repository Owner"
     required: true
-    type: string
   repo:
     description: "Repository name"
     required: true
-    type: string
   pull_number:
     description: "Pull request number"
     required: true
-    type: string
   token:
     description: "GitHub token"
     required: true
-    type: string
+  image:
+    description: "Public prebuilt signoff runtime; an explicit tag or digest must be accessible"
+    required: false
+    default: ghcr.io/nvidia/spark-rapids-common/signoff-check:v1
 
 runs:
   using: "composite"
   steps:
-    - name: Checkout repository
-      uses: NVIDIA/spark-rapids-common/checkout@main
-      with:
-        repository: NVIDIA/spark-rapids-common
-        ref: main
-
-    - name: Run Signoff Check in Docker
+    - name: Run Signoff Check using the prebuilt runtime
       shell: bash
+      env:
+        OWNER: ${{ inputs.owner }}
+        REPO_NAME: ${{ inputs.repo }}
+        GITHUB_TOKEN: ${{ inputs.token }}
+        PULL_NUMBER: ${{ inputs.pull_number }}
+        SIGNOFF_IMAGE: ${{ inputs.image }}
+        SIGNOFF_ACTION_PATH: ${{ github.action_path }}
       run: |
-        pushd ./signoff-check
-        docker build -t signoff-check -f Dockerfile .
-        docker run --rm \
-          -e OWNER="${{ inputs.owner }}" \
-          -e REPO_NAME="${{ inputs.repo }}" \
-          -e GITHUB_TOKEN="${{ inputs.token }}" \
-          -e PULL_NUMBER="${{ inputs.pull_number }}" \
-          signoff-check
+        set -euo pipefail
+        docker_config=$(mktemp -d)
+        trap 'rm -rf "$docker_config"' EXIT
+        image="$SIGNOFF_IMAGE"
+
+        if ! docker --config "$docker_config" pull "$image"; then
+          if [[ "$image" != ghcr.io/nvidia/spark-rapids-common/signoff-check:v1 ]]; then
+            echo "::error::The requested signoff image could not be pulled anonymously."
+            exit 1
+          fi
+          echo "::warning::The public signoff image is unavailable; building the action's runtime locally."
+          image="signoff-check:$(basename "$docker_config")"
+          docker --config "$docker_config" build --pull --tag "$image" "$SIGNOFF_ACTION_PATH"
+        fi
+
+        # Keep the script tied to the caller's action revision, not a mutable image tag.
+        docker --config "$docker_config" run --rm --interactive \
+          --env OWNER --env REPO_NAME --env GITHUB_TOKEN --env PULL_NUMBER \
+          --entrypoint python "$image" - < "$SIGNOFF_ACTION_PATH/signoff-check"
