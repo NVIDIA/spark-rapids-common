@@ -51,7 +51,7 @@ untouched. The workflow summary records the published digest. Existing signoff
 workflows retain their current runner selection; moving PR jobs to the managed
 CPU pool is separate from building their reusable runtime image.
 
-## Test runner access before merging
+## Validate runner access on a pull request
 
 The `Runner pool smoke test` workflow runs two independent jobs:
 
@@ -61,20 +61,23 @@ The `Runner pool smoke test` workflow runs two independent jobs:
 Both build the signoff runtime locally and check its CLI and stdin-based script
 execution. They do not publish to GHCR or require registry credentials.
 
-From a reviewed checkout of the PR, a maintainer can start the test without
-merging by pushing to a dedicated branch in the NVIDIA repository:
+The workflow runs on `pull-request/<number>` branches in the NVIDIA repository,
+using the exact reviewed PR-head commit. GitHub attaches the resulting CPU and
+GPU checks to that PR, so validation does not require merging the PR or the
+workflow into `main`.
+
+Normally, the platform's `copy-pr-bot` creates and updates these branches. Until
+that app is enabled for this repository, a maintainer can use the documented
+manual equivalent. For PR #65, from its reviewed checkout:
 
 ```sh
-git push https://github.com/NVIDIA/spark-rapids-common.git HEAD:refs/heads/ci/runner-pool-smoke
+git push https://github.com/NVIDIA/spark-rapids-common.git HEAD:refs/heads/pull-request/65
 ```
 
-Open the repository's Actions tab and select `Runner pool smoke test` to inspect
-or rerun the jobs. The initial push works before the workflow exists on `main`;
-it does not depend on the manual-dispatch UI being available. Pushing only to a
-personal fork does not test the NVIDIA repository's runner access.
-
-This is a maintainer-controlled branch smoke test, not an automatic PR workflow.
-Future managed-runner PR testing must use the platform's `copy-pr-bot` process.
+Read `nv-cpu-general` and `nv-gpu-general` in the PR's Checks tab. Each new PR-head
+commit needs to be reviewed and mirrored again until the bot is enabled.
+Managed runners reject `pull_request` and `pull_request_target` events; this
+trusted-commit process is the platform's supported PR-testing mechanism.
 
 ## Usage
 

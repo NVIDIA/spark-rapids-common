@@ -14,12 +14,11 @@
 
 name: Runner pool smoke test
 
-# A maintainer pushes reviewed code to this branch; no merge is needed.
+# The mirrored PR-head SHA reports these checks directly on the original PR.
 on:
   push:
     branches:
-      - ci/runner-pool-smoke
-  workflow_dispatch:
+      - 'pull-request/[0-9]+'
 
 permissions:
   contents: read
