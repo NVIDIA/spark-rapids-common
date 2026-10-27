@@ -1,0 +1,77 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Runner pool smoke test
+
+# A maintainer pushes reviewed code to this branch; no merge is needed.
+on:
+  push:
+    branches:
+      - ci/runner-pool-smoke
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-pool-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    if: github.repository == 'NVIDIA/spark-rapids-common'
+    name: ${{ matrix.pool }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pool: nv-cpu-general
+            runner: linux-amd64-cpu16
+            gpu: false
+          - pool: nv-gpu-general
+            runner: linux-amd64-gpu-l4-latest-1
+            gpu: true
+    env:
+      SMOKE_IMAGE: signoff-check:runner-smoke
+    steps:
+      - name: Checkout the tested revision
+        uses: NVIDIA/spark-rapids-common/checkout@main
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check runner and Docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          uname -sm
+          nproc
+          docker version
+      - name: Build and run the signoff runtime locally
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --pull --tag "$SMOKE_IMAGE" signoff-check
+          docker run --rm "$SMOKE_IMAGE" --help
+          docker run --rm --interactive --entrypoint python "$SMOKE_IMAGE" - --help \
+            < signoff-check/signoff-check
+      - name: Check GPU access on the host and in Docker
+        if: matrix.gpu
+        shell: bash
+        run: |
+          set -euo pipefail
+          nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
+          docker run --rm --gpus all --entrypoint nvidia-smi "$SMOKE_IMAGE" \
+            --query-gpu=name,driver_version,memory.total --format=csv

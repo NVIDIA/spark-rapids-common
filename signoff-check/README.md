@@ -51,6 +51,31 @@ untouched. The workflow summary records the published digest. Existing signoff
 workflows retain their current runner selection; moving PR jobs to the managed
 CPU pool is separate from building their reusable runtime image.
 
+## Test runner access before merging
+
+The `Runner pool smoke test` workflow runs two independent jobs:
+
+- `nv-cpu-general`: `linux-amd64-cpu16`.
+- `nv-gpu-general`: `linux-amd64-gpu-l4-latest-1`, including host and Docker GPU access.
+
+Both build the signoff runtime locally and check its CLI and stdin-based script
+execution. They do not publish to GHCR or require registry credentials.
+
+From a reviewed checkout of the PR, a maintainer can start the test without
+merging by pushing to a dedicated branch in the NVIDIA repository:
+
+```sh
+git push https://github.com/NVIDIA/spark-rapids-common.git HEAD:refs/heads/ci/runner-pool-smoke
+```
+
+Open the repository's Actions tab and select `Runner pool smoke test` to inspect
+or rerun the jobs. The initial push works before the workflow exists on `main`;
+it does not depend on the manual-dispatch UI being available. Pushing only to a
+personal fork does not test the NVIDIA repository's runner access.
+
+This is a maintainer-controlled branch smoke test, not an automatic PR workflow.
+Future managed-runner PR testing must use the platform's `copy-pr-bot` process.
+
 ## Usage
 
 ```yaml
