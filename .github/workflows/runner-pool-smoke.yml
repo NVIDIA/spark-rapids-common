@@ -14,7 +14,7 @@
 
 name: Runner pool smoke test
 
-# copy-pr-bot mirrors trusted ready PRs or explicitly approved PR heads.
+# copy-pr-bot mirrors the PR head after /ok to test approval.
 on:
   push:
     branches:
@@ -63,7 +63,7 @@ jobs:
           uname -sm
           nproc
           docker version
-      - name: Identify the mirrored PR
+      - name: Identify the approved PR
         id: pr
         shell: bash
         run: |
