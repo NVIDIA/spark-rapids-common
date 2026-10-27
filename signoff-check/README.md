@@ -38,7 +38,7 @@ is granted. Production `v1` publication is restricted to `main` and requires
 anonymous pulls to succeed. Fork workflows cannot publish.
 
 The PR workflow also calls this publisher after both runner smoke jobs pass.
-Bot-approved `pull-request/<number>` branches publish an amd64/arm64 preview as
+Bot-created `pull-request/<number>` branches publish an amd64/arm64 preview as
 `ghcr.io/nvidia/spark-rapids-common/signoff-check:pr-<number>`, without changing
 `v1`. Both platforms pass CLI smoke checks before the preview tag is updated.
 If the new package is still private, the preview uses authenticated pulls for
@@ -68,14 +68,14 @@ The `Runner pool smoke test` workflow runs two independent jobs:
 
 Both call the PR's local `signoff-check` action against the actual pull request,
 using the already-published preview pinned by digest. The action pulls the image
-anonymously and executes the signoff script from the approved checkout. These
+anonymously and executes the signoff script from the mirrored checkout. These
 checks do not rebuild the runtime or substitute a local build if the pull fails.
 Only read access to repository contents and pull requests is needed. After both
 pass, a separate CPU job publishes the PR preview using only the built-in
 `GITHUB_TOKEN` with `packages: write`; no PAT or additional secret is required.
 
 The workflow runs on `pull-request/<number>` branches in the NVIDIA repository,
-using the exact reviewed PR-head commit. GitHub attaches the resulting CPU and
+using the exact PR-head commit. GitHub attaches the resulting CPU and
 GPU checks to that PR, so validation does not require merging the PR or the
 workflow into `main`.
 
@@ -84,14 +84,15 @@ repository and `.github/copy-pr-bot.yaml` is present on `main`. A configuration
 file on a PR does not activate the bot. The configuration-only setup can be
 merged separately while the workflow change stays unmerged.
 
-Automatic syncing is disabled for both draft and ready PRs. The bot's default
-trust and vetter rules apply: an organization member can approve trusted PRs
-with `/ok to test`; PRs with untrusted changes require a vetter's approval with
-the full latest head SHA. Trust depends on the PR author, committers, and verified
-commit signatures; a DCO signoff alone does not make a commit trusted.
+Trusted ready-for-review PRs sync automatically; draft auto-sync is disabled.
+The bot's default trust and vetter rules apply: an organization member can
+manually approve trusted PRs with `/ok to test`; untrusted changes always require
+a vetter's approval with the full latest head SHA, including on ready PRs.
+Trust depends on the PR author, committers, and verified commit signatures;
+a DCO signoff alone does not make a commit trusted.
 
-Review the latest changes, then post this comment on the PR, replacing the
-placeholder with its full 40-character head SHA:
+For manual approval, review the latest changes, then post this comment on the
+PR, replacing the placeholder with its full 40-character head SHA:
 
 ```text
 /ok to test <full 40-character head SHA>
@@ -100,14 +101,14 @@ placeholder with its full 40-character head SHA:
 The bot acknowledges a successful command with a thumbs-up reaction and mirrors
 the latest PR head. Read `nv-cpu-general` and `nv-gpu-general` in the PR's Checks
 tab. For untrusted changes, bare commands, abbreviated SHAs, and stale SHAs are
-rejected; trusted PRs do not enforce SHA matching. Every new commit needs another
-approval comment because automatic syncing is disabled. Manual branch pushes
-do not start the managed tests or PR publication: both workflows require the
-push actor to be `copy-pr-bot[bot]`.
+rejected; trusted PRs do not enforce SHA matching. New heads on draft PRs or PRs
+with untrusted changes need another approval comment; trusted ready PRs sync
+automatically. Manual branch pushes do not start the managed tests or PR
+publication: both workflows require the push actor to be `copy-pr-bot[bot]`.
 
 Existing GitHub-hosted lint and PR-metadata checks remain automatic. Managed
 runners reject `pull_request` and `pull_request_target` events; the bot's
-approved-head push is the supported trigger for these CPU/GPU checks.
+mirrored-head push is the supported trigger for these CPU/GPU checks.
 
 ## Usage
 
