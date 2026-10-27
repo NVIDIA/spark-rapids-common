@@ -24,4 +24,6 @@ async function main() {
   }
 }
 
-main().catch(fail);
+if (require.main === module) main().catch(fail);
+
+module.exports = main;

@@ -30,4 +30,6 @@ async function main() {
   console.log('Parent active and approved source unchanged');
 }
 
-main().catch(fail);
+if (require.main === module) main().catch(fail);
+
+module.exports = main;

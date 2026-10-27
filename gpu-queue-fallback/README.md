@@ -192,6 +192,18 @@ by the unique `run-name` for cancellation, never by dispatching a duplicate.
 
 ## Validation before rollout
 
+Run the functional suite with Node.js 24:
+
+```sh
+node --test gpu-queue-fallback/test/*.test.js
+```
+
+It exercises the coordinator, post cleanup and child guard using a fake GitHub
+API and clock. No real API calls, credentials, sleeps or GPU allocations are used.
+The hosted-CPU test workflow runs only for PRs changing `gpu-queue-fallback/**` or
+`.github/workflows/gpu-queue-fallback-test.yml`. Keep this path-filtered workflow
+non-required globally so unrelated PRs are not blocked by an absent check.
+
 Do not enable broad PR traffic until a bounded pilot proves primary success, queue
 fallback, exhaustion, product failure without retry, parent cancellation and the
 queue/start race on actual runners. This implementation alone does not migrate any
