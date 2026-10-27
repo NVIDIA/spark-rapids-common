@@ -20,8 +20,9 @@ should compare inherited and legacy selections before converting annotations.
 
 from collections import namedtuple
 import json
+import re
 
-from shimpler_source_graph import validate_source_graph
+from shimpler_source_graph import source_lineage, validate_source_graph
 
 
 try:
@@ -31,6 +32,14 @@ except NameError:
 
 
 SourceSelector = namedtuple('SourceSelector', 'kind targets other_components')
+
+
+def spark_minor(target):
+    """Return the major/minor encoded by the repository's Spark buildver."""
+    match = re.match(r'^([0-9])([0-9])[0-9](?:db.*)?$', target)
+    if match is None:
+        raise ValueError('sameMinor requires a three-digit Spark build target: %s' % target)
+    return match.group(1), match.group(2)
 
 
 def parse_selector_line(line, graph, allow_unmapped_exact=False):
@@ -45,11 +54,14 @@ def parse_selector_line(line, graph, allow_unmapped_exact=False):
         raise ValueError('Shim selector must contain a spark field')
 
     spark = entry['spark']
-    descendant_flag = entry.get('includeDescendantShims')
-    if not isinstance(spark, list) or type(descendant_flag) is not bool:
+    carry_forward = entry.get('carryForward')
+    if not isinstance(spark, list) or carry_forward not in ('none', 'sameMinor', 'all'):
         raise ValueError('Spark selector requires a target list and '
-                         'includeDescendantShims boolean')
-    kind = 'descendants' if descendant_flag else 'exact'
+                         'carryForward value none, sameMinor, or all')
+    if 'includeDescendantShims' in entry:
+        raise ValueError('Use carryForward instead of includeDescendantShims')
+    kind = {'none': 'exact', 'sameMinor': 'minor',
+            'all': 'descendants'}[carry_forward]
     targets = tuple(spark)
 
     if not targets or any(not isinstance(target, string_types) or not target for target in targets):
@@ -61,7 +73,7 @@ def parse_selector_line(line, graph, allow_unmapped_exact=False):
             raise ValueError('Unknown Spark selector target %s' % target)
 
     other_components = dict((key, value) for key, value in entry.items()
-                            if key not in ('spark', 'includeDescendantShims'))
+                            if key not in ('spark', 'carryForward'))
     return SourceSelector(kind, targets, other_components)
 
 
@@ -91,6 +103,21 @@ def inherited_membership(graph, introductions):
                 break
             current = graph[current]
     return membership
+
+
+def selector_membership(graph, selector):
+    """Expand a selector to its active build targets."""
+    if selector.kind == 'exact':
+        return set(selector.targets)
+    descendants = inherited_membership(graph, selector.targets)
+    if selector.kind == 'descendants':
+        return descendants
+    if selector.kind == 'minor':
+        return set(target for target in descendants
+                   if any(root in source_lineage(graph, target) and
+                          spark_minor(root) == spark_minor(target)
+                          for root in selector.targets))
+    raise ValueError('Unknown Spark selector kind %s' % selector.kind)
 
 
 def inheritance_mismatches(graph, exact_targets):

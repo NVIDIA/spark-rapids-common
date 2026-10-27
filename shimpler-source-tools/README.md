@@ -5,16 +5,28 @@ Spark RAPIDS builds. They parse `shim.source.inherits` from Maven profiles, pars
 shim selectors, resolve the nearest source variant, and materialize the selected
 files. The modules use only Python 2.7/Jython-compatible standard-library APIs.
 
-Use the same selector form for exact targets and inherited roots:
+Use one selector form for exact targets and inherited roots:
 
 ```json
-{"spark":["330","331"],"includeDescendantShims":false}
-{"spark":["330","350","400","420"],"includeDescendantShims":true}
+{"spark":["330","331"],"carryForward":"none"}
+{"spark":["400"],"carryForward":"sameMinor"}
+{"spark":["330","350","400","420"],"carryForward":"all"}
 ```
 
-With `false`, the source applies only to the listed targets. With `true`, it
-applies to each listed root and its descendants. A nearer source variant for a
-target takes precedence. Scalar and object-form Spark selectors are not supported.
+`none` applies only to the listed targets. `sameMinor` also applies to their
+descendants in the same Spark major/minor release line; for example, 404 reaches
+405 but not 411, even if 411 inherits 404. `all` applies to every descendant.
+All scopes follow the explicit `shim.source.inherits` graph, and a nearer
+source variant takes precedence. The major/minor line comes from the first two
+digits of the three-digit Spark buildver. Scalar and object-form Spark selectors
+and the old `includeDescendantShims` field are not supported.
+
+A patch release normally adds a graph edge to the preceding patch and an exact
+version-identity source; `sameMinor` sources then arrive without annotation
+edits. A new minor line can also inherit its predecessor as a starting point:
+keep `all` only where source compatibility is intended across that boundary,
+use `sameMinor` for sources that must stop, and add nearer variants for changed
+APIs. The graph remains necessary to define that starting point and precedence.
 
 The consumer repository owns its Maven/Ant entry point, build-version discovery,
 and release-profile policy. It should pin a reviewed version of these files and

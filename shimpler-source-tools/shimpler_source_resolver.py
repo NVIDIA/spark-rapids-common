@@ -25,7 +25,7 @@ import re
 
 from shimpler_source_graph import source_lineage, validate_source_graph
 from shimpler_source_selectors import (SourceSelector, derive_introductions,
-                                      inherited_membership, parse_selector_line)
+                                      inherited_membership, parse_selector_line, spark_minor)
 
 
 SHIM_COMMENT = re.compile(r'/\*\*\* spark-rapids-shim-json-lines\s*\n(.*?)\n'
@@ -111,7 +111,9 @@ def _matching_selection(variant, lineage):
                 matches.append((0, lineage[0], selector.kind))
         else:
             for distance, ancestor in enumerate(lineage):
-                if ancestor in selector.targets:
+                if (ancestor in selector.targets and
+                        (selector.kind != 'minor' or
+                         spark_minor(ancestor) == spark_minor(lineage[0]))):
                     matches.append((distance, ancestor, selector.kind))
                     break
     return min(matches) if matches else None
@@ -161,7 +163,7 @@ def candidate_inherited_sources(graph, variants):
     candidates = []
     non_inheritable = []
     for variant in variants:
-        if any(selector.kind == 'descendants' for selector in variant.selectors):
+        if any(selector.kind != 'exact' for selector in variant.selectors):
             raise ValueError('A captured pre-conversion oracle is required for %s' %
                              variant.logical_path)
         exact = set(target for selector in variant.selectors if selector.kind == 'exact'
