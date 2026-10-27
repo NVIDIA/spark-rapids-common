@@ -28,14 +28,14 @@ inputs:
     description: "GitHub token"
     required: true
   image:
-    description: "Public signoff runtime image; an explicit tag or digest must be accessible"
+    description: "Public prebuilt signoff runtime; an explicit tag or digest must be accessible"
     required: false
     default: ghcr.io/nvidia/spark-rapids-common/signoff-check:v1
 
 runs:
   using: "composite"
   steps:
-    - name: Run Signoff Check in Docker
+    - name: Run Signoff Check using the prebuilt runtime
       shell: bash
       env:
         OWNER: ${{ inputs.owner }}
