@@ -192,17 +192,17 @@ test('primary success forwards immutable inputs and reports the selected run', {
 });
 
 for (const [kind, runners] of [['GPU', gpuRunners], ['CPU', cpuRunners]]) {
-  test(`${kind} child metadata is first read after the initial five-second delay`, {timeout: 5000}, async t => {
+  test(`${kind} child metadata is first read after the initial fifteen-second delay`, {timeout: 5000}, async t => {
     const f = fixture(t, runners);
     const started = f.now;
     f.onDispatch = run => f.finish(run, 'success');
     assert.equal(await f.run(), 0);
-    assert.deepEqual(f.sleeps, [5000]);
+    assert.deepEqual(f.sleeps, [15000]);
     const reads = f.requests.filter(request => request.route.startsWith('/actions/runs/100'));
     assert.equal(reads.length, 2);
-    assert.ok(reads.every(request => request.at === started + 5000));
-    assert.ok(f.logs.includes('Child 100: first metadata poll in 5s (within the 120s startup window)'));
-    assert.ok(f.logs.includes('Poll #1: child 100; elapsed 5s; run completed/success; worker success; polling finished'));
+    assert.ok(reads.every(request => request.at === started + 15000));
+    assert.ok(f.logs.includes('Child 100: first metadata poll in 15s (within the 120s startup window)'));
+    assert.ok(f.logs.includes('Poll #1: child 100; elapsed 15s; run completed/success; worker success; polling finished'));
     assert.equal(f.runs.length, 1);
     assert.equal(f.state(), null);
   });
@@ -225,13 +225,13 @@ for (const status of ['queued', 'in_progress']) {
       if (milliseconds === 60000 && ++rounds === 2) f.finish(f.runs[0], 'success');
     };
     assert.equal(await f.run(), 0);
-    assert.deepEqual(f.sleeps, [5000, 60000, 60000]);
+    assert.deepEqual(f.sleeps, [15000, 60000, 60000]);
     assert.deepEqual(f.requests.filter(request => request.route === '/actions/runs/100')
-      .map(request => request.at - started), [5000, 65000, 125000]);
+      .map(request => request.at - started), [15000, 75000, 135000]);
     assert.deepEqual(f.logs.filter(message => message.startsWith('Poll #')), [
-      `Poll #1: child 100; elapsed 5s; run ${status}; worker ${status}; next poll in 60s (1 minute)`,
-      `Poll #2: child 100; elapsed 65s; run ${status}; worker ${status}; next poll in 60s (1 minute)`,
-      'Poll #3: child 100; elapsed 125s; run completed/success; worker success; polling finished',
+      `Poll #1: child 100; elapsed 15s; run ${status}; worker ${status}; next poll in 60s (1 minute)`,
+      `Poll #2: child 100; elapsed 75s; run ${status}; worker ${status}; next poll in 60s (1 minute)`,
+      'Poll #3: child 100; elapsed 135s; run completed/success; worker success; polling finished',
     ]);
     assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
     assert.equal(f.state(), null);
@@ -370,7 +370,7 @@ test('GET rate limiting backs off while keeping dispatch single-shot', {timeout:
   };
   f.onDispatch = run => f.finish(run, 'success');
   assert.equal(await f.run(), 0);
-  assert.equal(f.now - started, 1000 + 5000);
+  assert.equal(f.now - started, 1000 + 15000);
   assert.equal(f.runs.length, 1);
 });
 
@@ -380,7 +380,7 @@ for (const delay of ['identity', 'run 404', 'jobs 404', 'empty jobs']) {
     const started = f.now;
     f.onDispatch = run => f.finish(run, 'success');
     f.beforeRequest = request => {
-      if (f.now - started >= 10000) return;
+      if (f.now - started >= 20000) return;
       if (request.route === '/actions/runs/100') {
         if (delay === 'run 404') return new Response('', {status: 404});
         if (delay === 'identity') {
@@ -393,13 +393,13 @@ for (const delay of ['identity', 'run 404', 'jobs 404', 'empty jobs']) {
       }
     };
     assert.equal(await f.run(), 0);
-    assert.equal(f.now - started, 10000);
+    assert.equal(f.now - started, 20000);
     assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
     const pending = f.logs.filter(message => message.includes('metadata pending'));
     assert.equal(pending.length, 1);
-    assert.match(pending[0], /^Poll #1: child 100; elapsed 5s; metadata pending/);
+    assert.match(pending[0], /^Poll #1: child 100; elapsed 15s; metadata pending/);
     assert.match(pending[0], /next poll in 5s$/);
-    assert.deepEqual(f.sleeps, [5000, 5000]);
+    assert.deepEqual(f.sleeps, [15000, 5000]);
     assert.equal(f.errors.length, 0);
     assert.equal(f.state(), null);
   });
@@ -442,7 +442,7 @@ for (const [field, value] of Object.entries({
       if (milliseconds === 60000) f.runs[0][field] = value;
     };
     assert.equal(await f.run(), 1);
-    assert.equal(f.now - started, 5000 + 60000);
+    assert.equal(f.now - started, 15000 + 60000);
     assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled']);
     assert.match(f.errors.join('\n'), /identity mismatch/);
     assert.ok(f.errors.some(message => message.includes(`"field":"${field}"`)));
@@ -581,7 +581,7 @@ test('four x86 CPU sizes use ten-minute queues and cancel before each switch', {
   const started = f.now;
   f.onDispatch = run => { if (run.id === 103) f.finish(run, 'success'); };
   assert.equal(await f.run(), 0);
-  assert.equal(f.now - started, 3 * 10 * 60000 + 4 * 5000);
+  assert.equal(f.now - started, 3 * 10 * 60000 + 4 * 15000);
   assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)), runners);
   assert.deepEqual(f.events, [
     'dispatch:100', 'cancel:100', 'completed:100:cancelled',

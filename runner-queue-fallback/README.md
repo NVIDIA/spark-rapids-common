@@ -223,7 +223,7 @@ trigger are unchanged; rerun the parent, not the dispatched worker.
   dispatch. Keep `workflow-ref` stable during a sequence; a protected tag can avoid
   failures caused by unrelated changes to `main`.
 - A newly dispatched child gets a two-minute startup window for run identity and
-  job metadata to become visible. The first check waits five seconds, counted within
+  job metadata to become visible. The first check waits fifteen seconds, counted within
   that window; pending metadata is then checked every five seconds. Temporary child/job
   HTTP 404 responses are retried only during startup. Identity must match exactly
   before accepting any result; later identity changes fail immediately. Expiry

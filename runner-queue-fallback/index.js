@@ -130,8 +130,8 @@ async function main() {
 
       const dispatchedAt = Date.now();
       const jobDeadline = dispatchedAt + 120000;
-      console.log(`Child ${active.id}: first metadata poll in 5s (within the 120s startup window)`);
-      await sleep(5000);
+      console.log(`Child ${active.id}: first metadata poll in 15s (within the 120s startup window)`);
+      await sleep(15000);
       let identityConfirmed = false;
       let queuedAt;
       let startedAt;
