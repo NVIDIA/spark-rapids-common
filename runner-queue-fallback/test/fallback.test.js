@@ -143,6 +143,8 @@ function fixture(t, runners = gpuRunners) {
         run_attempt: 1, event: 'workflow_dispatch', head_sha: workflowSha,
         display_title: payload.inputs['request-id'], payload,
         job: {
+          id: 1000 + f.runs.length,
+          html_url: `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${100 + f.runs.length}/job/${1000 + f.runs.length}`,
           name: 'worker', status: 'queued', conclusion: null,
           runner_id: 0, runner_name: '', steps: [],
           started_at: new Date(f.now).toISOString(),
@@ -190,9 +192,10 @@ test('primary success forwards immutable inputs and reports the selected run', {
   assert.equal(f.state(), null);
   assert.equal(f.errors.length, 0);
   const url = 'https://example.invalid/example/consumer/actions/runs/100';
-  assert.equal(f.logs.at(-1), `View worker logs and artifacts here: ${url}`);
-  assert.ok(fs.readFileSync(process.env.GITHUB_STEP_SUMMARY, 'utf8')
-    .includes(`[View worker logs and artifacts here](${url})`));
+  assert.equal(f.logs.at(-1), `View worker job logs here: ${url}/job/1000`);
+  const summary = fs.readFileSync(process.env.GITHUB_STEP_SUMMARY, 'utf8');
+  assert.ok(summary.includes(`[View worker job logs here](${url}/job/1000)`));
+  assert.ok(summary.includes(`[Worker artifacts](${url})`));
 });
 
 for (const [kind, runners] of [['GPU', gpuRunners], ['CPU', cpuRunners]]) {
@@ -290,9 +293,28 @@ for (const result of ['failure', 'skipped']) {
     assert.equal(f.events.filter(event => event.startsWith('cancel:')).length, 0);
     assert.match(f.errors.join('\n'), /no workload retry/);
     assert.equal(f.logs.at(-1),
-      'View worker logs and artifacts here: https://example.invalid/example/consumer/actions/runs/100');
+      'View worker job logs here: https://example.invalid/example/consumer/actions/runs/100/job/1000');
     assert.match(fs.readFileSync(process.env.GITHUB_STEP_SUMMARY, 'utf8'),
-      /failed: Worker 100:.*\[View worker logs and artifacts here\]\(https:\/\/example\.invalid\/example\/consumer\/actions\/runs\/100\)/);
+      /failed: Worker 100:.*\[View worker job logs here\]\(https:\/\/example\.invalid\/example\/consumer\/actions\/runs\/100\/job\/1000\)/);
+  });
+}
+
+for (const hasJobId of [true, false]) {
+  test(`failure without job html_url: ${hasJobId ? 'use job ID' : 'label run fallback'}`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    f.onDispatch = run => {
+      delete run.job.html_url;
+      if (!hasJobId) delete run.job.id;
+      f.finish(run, 'failure');
+    };
+    assert.equal(await f.run(), 1);
+    const url = 'https://example.invalid/example/consumer/actions/runs/100';
+    assert.equal(f.logs.at(-1), hasJobId
+      ? `View worker job logs here: ${url}/job/1000`
+      : `Job link unavailable; view worker run here: ${url}`);
+    assert.match(f.errors.join('\n'), /Worker 100: failure; no workload retry/);
+    assert.equal(f.runs.length, 1);
+    assert.equal(f.state(), null);
   });
 }
 
@@ -307,7 +329,7 @@ test('execution timeout cancels the acquired runner without fallback', {timeout:
   assert.equal(f.runs[0].conclusion, 'cancelled');
   assert.match(f.errors.join('\n'), /execution timeout; no fallback/);
   assert.equal(f.logs.at(-1),
-    'View worker logs and artifacts here: https://example.invalid/example/consumer/actions/runs/100');
+    'View worker job logs here: https://example.invalid/example/consumer/actions/runs/100/job/1000');
 });
 
 test('unconfirmed cancellation preserves cleanup state and never dispatches again', {timeout: 5000}, async t => {
@@ -318,7 +340,7 @@ test('unconfirmed cancellation preserves cleanup state and never dispatches agai
   assert.equal(f.state().id, 100);
   assert.match(f.errors.join('\n'), /Cancellation unconfirmed/);
   assert.equal(f.logs.at(-1),
-    'View worker logs and artifacts here: https://example.invalid/example/consumer/actions/runs/100');
+    'View worker job logs here: https://example.invalid/example/consumer/actions/runs/100/job/1000');
 });
 
 test('lost dispatch response is recovered by request identity, not retried', {timeout: 5000}, async t => {

@@ -85,11 +85,13 @@ async function main() {
   const report = (active, outcome, queuedAt) => {
     const wait = queuedAt ? `; observed queue wait ${Math.round((Date.now() - queuedAt) / 1000)}s` : '';
     const line = `${active.runner.labels}: ${outcome}${wait}; child ${active.id}`;
+    const logUrl = active.jobUrl || active.url;
+    const logLabel = active.jobUrl ? 'View worker job logs here' : 'Job link unavailable; view worker run here';
     console.log(line);
-    console.log(`View worker logs and artifacts here: ${active.url}`);
+    console.log(`${logLabel}: ${logUrl}`);
     if (process.env.GITHUB_STEP_SUMMARY) {
       fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
-        `- ${line} ([View worker logs and artifacts here](${active.url}))\n`);
+        `- ${line} ([${logLabel}](${logUrl}); [Worker artifacts](${active.url}))\n`);
     }
   };
 
@@ -159,6 +161,11 @@ async function main() {
           continue;
         }
         identityConfirmed = true;
+        const jobUrl = job?.html_url || (job?.id ? `${active.url}/job/${job.id}` : null);
+        if (jobUrl && jobUrl !== active.jobUrl) {
+          active.jobUrl = jobUrl;
+          save(active);
+        }
         if (acquired(job) && !startedAt) {
           startedAt = Date.now();
           report(active, 'runner acquired; fallback disabled', queuedAt);
