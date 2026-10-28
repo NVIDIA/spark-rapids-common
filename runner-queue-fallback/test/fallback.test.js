@@ -65,7 +65,7 @@ function fixture(t, runners = gpuRunners) {
 
   const f = {
     now: Date.parse('2026-01-01T00:00:00Z'),
-    runs: [], requests: [], events: [], errors: [], unexpected: [],
+    runs: [], requests: [], events: [], errors: [], logs: [], unexpected: [],
     parent: {status: 'in_progress', run_attempt: 1}, source: sourceSha,
     onDispatch() {},
     onCancel(run) { f.finish(run, 'cancelled'); },
@@ -107,7 +107,7 @@ function fixture(t, runners = gpuRunners) {
     fs.rmSync(directory, {recursive: true, force: true});
     assert.deepEqual(f.unexpected, [], 'No unexpected API calls');
   });
-  t.mock.method(console, 'log', () => {});
+  t.mock.method(console, 'log', message => f.logs.push(message));
   t.mock.method(console, 'error', message => f.errors.push(message));
   t.mock.method(Date, 'now', () => f.now);
   // Mock only the imported sleep, leaving node:test's real timeout active.
@@ -322,6 +322,146 @@ test('GET rate limiting backs off while keeping dispatch single-shot', {timeout:
   assert.equal(await f.run(), 0);
   assert.equal(f.now - started, 1000);
   assert.equal(f.runs.length, 1);
+});
+
+for (const delay of ['identity', 'run 404', 'jobs 404', 'empty jobs']) {
+  test(`startup metadata recovers: ${delay}`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    const started = f.now;
+    f.onDispatch = run => f.finish(run, 'success');
+    f.beforeRequest = request => {
+      if (f.now - started >= 10000) return;
+      if (request.route === '/actions/runs/100') {
+        if (delay === 'run 404') return new Response('', {status: 404});
+        if (delay === 'identity') {
+          return Response.json({...f.runs[0], display_title: ''});
+        }
+      }
+      if (request.route === '/actions/runs/100/attempts/1/jobs') {
+        if (delay === 'jobs 404') return new Response('', {status: 404});
+        if (delay === 'empty jobs') return Response.json({total_count: 0, jobs: []});
+      }
+    };
+    assert.equal(await f.run(), 0);
+    assert.equal(f.now - started, 10000);
+    assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+    assert.equal(f.logs.filter(message => message.startsWith('Waiting for child')).length, 2);
+    assert.equal(f.errors.length, 0);
+    assert.equal(f.state(), null);
+  });
+}
+
+for (const missing of ['identity', 'jobs']) {
+  test(`startup deadline cleans up without fallback: ${missing}`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    const started = f.now;
+    if (missing === 'identity') f.onDispatch = run => { run.display_title = 'not-ready'; };
+    else f.beforeRequest = request => {
+      if (request.route === '/actions/runs/100/attempts/1/jobs') {
+        return Response.json({total_count: 0, jobs: []});
+      }
+    };
+    assert.equal(await f.run(), 1);
+    assert.equal(f.now - started, 120000);
+    assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled']);
+    assert.match(f.errors.join('\n'), /120s startup window; last observation:/);
+    const summary = fs.readFileSync(process.env.GITHUB_STEP_SUMMARY, 'utf8');
+    assert.match(summary, /failed: Worker metadata/);
+    assert.match(summary, /cleanup confirmed; child is no longer running/);
+    assert.match(summary, /actions\/runs\/100/);
+    if (missing === 'identity') {
+      assert.match(summary, /"field":"display_title"/);
+      assert.ok(summary.includes(`"expected":"${f.runs[0].payload.inputs['request-id']}"`));
+      assert.match(summary, /"actual":"not-ready"/);
+    } else assert.match(summary, /worker job is not visible/);
+    assert.equal(f.state(), null);
+  });
+}
+
+for (const [field, value] of Object.entries({
+  run_attempt: 2, event: 'push', head_sha: 'c'.repeat(40), display_title: 'changed',
+})) {
+  test(`confirmed identity changes fail immediately: ${field}`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    const started = f.now;
+    f.onSleep = () => { f.runs[0][field] = value; };
+    assert.equal(await f.run(), 1);
+    assert.equal(f.now - started, 60000);
+    assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled']);
+    assert.match(f.errors.join('\n'), /identity mismatch/);
+    assert.ok(f.errors.some(message => message.includes(`"field":"${field}"`)));
+    assert.ok(f.logs.every(message => !message.startsWith('Waiting for child')));
+    assert.equal(f.state(), null);
+  });
+}
+
+for (const method of ['GET', 'POST']) {
+  for (const failure of ['network', 'HTTP 503', 'malformed JSON']) {
+    for (const recover of [true, false]) {
+      test(`${method === 'GET' ? 'read' : 'cancel'} ${failure}: ${recover ? 'recovers' : 'exhausts retries'}`,
+        {timeout: 5000}, async t => {
+          const f = fixture(t);
+          const started = f.now;
+          const route = method === 'GET' ? '/actions/runs/7' : '/actions/runs/100/cancel';
+          if (method === 'POST') f.runs.push({id: 100, status: 'queued', job: {status: 'queued'}});
+          let calls = 0;
+          f.beforeRequest = request => {
+            if (request.route !== route || request.method !== method) return;
+            calls++;
+            if (recover && calls === 3) return;
+            if (failure === 'network') throw new TypeError('temporary connection failure');
+            if (failure === 'malformed JSON') return new Response('{', {status: 200});
+            return new Response('', {status: 503, headers: {'x-github-request-id': 'request-123'}});
+          };
+          const api = require('../lib').client();
+          if (recover) {
+            const result = await api(route, method);
+            assert.deepEqual(result, method === 'GET' ? f.parent : null);
+            assert.ok(f.logs.some(message => message.includes('recovered on attempt 3')));
+            if (method === 'POST') assert.equal(f.runs[0].status, 'completed');
+          } else {
+            await assert.rejects(api(route, method), error => {
+              assert.ok(error.message.includes(`GitHub ${method} ${route}:`));
+              assert.match(error.message, /after 3 attempt\(s\)/);
+              if (failure === 'HTTP 503') assert.match(error.message, /HTTP 503.*request ID request-123/);
+              else assert.match(error.message, failure === 'network' ? /temporary connection failure/ : /SyntaxError/);
+              return true;
+            });
+            if (method === 'POST') assert.equal(f.runs[0].status, 'queued');
+          }
+          assert.equal(calls, 3);
+          assert.equal(f.now - started, 15000);
+          assert.ok(f.events.every(event => !event.startsWith('dispatch:')));
+        });
+    }
+  }
+}
+
+test('HTTP 408 reads recover after bounded backoff', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  const started = f.now;
+  let calls = 0;
+  f.beforeRequest = request => {
+    if (request.route === '/actions/runs/7' && ++calls < 3) {
+      return new Response('', {status: 408});
+    }
+  };
+  assert.deepEqual(await require('../lib').client()('/actions/runs/7'), f.parent);
+  assert.equal(calls, 3);
+  assert.equal(f.now - started, 15000);
+});
+
+test('HTTP 503 dispatch is never retried', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  const started = f.now;
+  const route = '/actions/workflows/runner-worker.yml/dispatches';
+  f.beforeRequest = request => {
+    if (request.route === route) return new Response('', {status: 503});
+  };
+  await assert.rejects(require('../lib').client()(route, 'POST', {}), /HTTP 503 after 1 attempt\(s\)/);
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.now, started);
+  assert.equal(f.runs.length, 0);
 });
 
 for (const condition of ['active', 'completed parent', 'stale source', 'rerun']) {

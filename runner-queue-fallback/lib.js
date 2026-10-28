@@ -42,23 +42,42 @@ function client() {
   const token = input('github-token');
   const root = `${process.env.GITHUB_API_URL}/repos/${process.env.GITHUB_REPOSITORY}`;
   return async (path, method = 'GET', body) => {
+    const retrySafe = method === 'GET' || path.endsWith('/cancel');
     // Do not retry dispatch POSTs: an ambiguous response may already have created a run.
     for (let attempt = 0; ; attempt++) {
-      const response = await fetch(`${root}${path}`, {
-        method,
-        headers: {
-          Accept: 'application/vnd.github+json',
-          Authorization: `Bearer ${token}`,
-          'X-GitHub-Api-Version': '2026-03-10',
-          'Content-Type': 'application/json',
-          'User-Agent': 'runner-queue-fallback',
-        },
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(15000),
-        redirect: 'error',
-      });
-      const text = await response.text();
-      if (response.ok) return text.trim() ? JSON.parse(text) : null;
+      let response;
+      try {
+        response = await fetch(`${root}${path}`, {
+          method,
+          headers: {
+            Accept: 'application/vnd.github+json',
+            Authorization: `Bearer ${token}`,
+            'X-GitHub-Api-Version': '2026-03-10',
+            'Content-Type': 'application/json',
+            'User-Agent': 'runner-queue-fallback',
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+          signal: AbortSignal.timeout(15000),
+          redirect: 'error',
+        });
+        const text = await response.text();
+        if (response.ok) {
+          const result = text.trim() ? JSON.parse(text) : null;
+          if (attempt) console.log(`GitHub ${method} ${path}: recovered on attempt ${attempt + 1}`);
+          return result;
+        }
+      } catch (error) {
+        const cause = String(error.message).replaceAll(token, '***').replace(/[\r\n]/g, ' ').slice(0,300);
+        const reason = `${error.cause?.code || error.name}: ${cause}`;
+        if (retrySafe && attempt < 2) {
+          const wait = (attempt + 1) * 5000;
+          console.log(`GitHub ${method} ${path}: ${reason}; retrying in ${wait / 1000}s`);
+          await sleep(wait);
+          continue;
+        }
+        throw new Error(`GitHub ${method} ${path}: request failed after ${attempt + 1} attempt(s)` +
+          ` (${reason})`, {cause: error});
+      }
 
       const after = response.headers.get('retry-after');
       const remaining = response.headers.get('x-ratelimit-remaining');
@@ -67,15 +86,17 @@ function client() {
         (response.status === 403 && (remaining === '0' || after !== null));
       const wait = after !== null
         ? (/^\d+$/.test(after) ? Number(after) * 1000 : Date.parse(after) - Date.now())
-        : remaining === '0' && reset ? Number(reset) * 1000 - Date.now() + 1000 : 30000;
-      const retrySafe = method === 'GET' || path.endsWith('/cancel');
-      if (retrySafe && rateLimited && attempt < 2 && Number.isFinite(wait) && wait <= 60000) {
-        console.log(`GitHub rate limit: waiting ${Math.max(1, Math.ceil(wait / 1000))}s`);
+        : remaining === '0' && reset ? Number(reset) * 1000 - Date.now() + 1000
+          : rateLimited ? 30000 : (attempt + 1) * 5000;
+      const transient = rateLimited || response.status === 408 || response.status >= 500;
+      if (retrySafe && transient && attempt < 2 && Number.isFinite(wait) && wait <= 60000) {
+        console.log(`GitHub ${method} ${path}: HTTP ${response.status}; retrying in ${Math.max(1, Math.ceil(wait / 1000))}s`);
         await sleep(Math.max(1000, wait));
         continue;
       }
-      const error = new Error(`GitHub ${method} ${path}: HTTP ${response.status}` +
-        (rateLimited ? '; API quota unavailable within the bounded backoff window' : ''));
+      const error = new Error(`GitHub ${method} ${path}: HTTP ${response.status} after ${attempt + 1} attempt(s)` +
+        (rateLimited ? '; API quota unavailable within the bounded backoff window' : '') +
+        `; request ID ${response.headers.get('x-github-request-id') || 'unavailable'}`);
       error.status = response.status;
       throw error;
     }
@@ -107,13 +128,36 @@ function acquired(job) {
       (step.status === 'completed' && step.conclusion !== 'skipped'))));
 }
 
-async function snapshot(api, active) {
-  const run = await api(`/actions/runs/${active.id}`);
-  if (run.run_attempt !== 1 || run.event !== 'workflow_dispatch' ||
-      run.head_sha !== active.workflowSha || run.display_title !== active.request) {
-    throw new Error('Child run identity changed or the child workflow contract does not match');
+async function snapshot(api, active, metadataDeadline = 0) {
+  const pending = message => {
+    if (Date.now() < metadataDeadline) return {metadataPending: message};
+    throw new Error(`Child ${active.id}: ${message}`);
+  };
+  let run;
+  try {
+    run = await api(`/actions/runs/${active.id}`);
+  } catch (error) {
+    if (error.status === 404) return pending(error.message);
+    throw error;
   }
-  const data = await api(`/actions/runs/${active.id}/attempts/1/jobs?per_page=100`);
+  const expected = {
+    run_attempt: 1, event: 'workflow_dispatch',
+    head_sha: active.workflowSha, display_title: active.request,
+  };
+  const mismatches = Object.entries(expected)
+    .filter(([key, value]) => run[key] !== value)
+    .map(([field, value]) => ({field, expected: value, actual: run[field] ?? null}));
+  if (mismatches.length) {
+    return pending(`identity mismatch: ${JSON.stringify(mismatches)}`);
+  }
+  let data;
+  try {
+    data = await api(`/actions/runs/${active.id}/attempts/1/jobs?per_page=100`);
+  } catch (error) {
+    if (error.status === 404) return pending(error.message);
+    throw error;
+  }
+  if (!data.jobs.length) return pending('worker job is not visible in the GitHub API');
   if (data.total_count > 1 || data.jobs.some(job => job.name !== 'worker')) {
     throw new Error('Child workflow must contain exactly one job named worker, without a matrix');
   }
