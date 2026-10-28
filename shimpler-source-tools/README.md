@@ -39,6 +39,9 @@ source-set parity check across every supported buildver, and run its clean
 multi-shim build. This directory intentionally contains no NVIDIA-private
 build profiles or source paths.
 
+Make shared behavior changes here first. Update consumer copies only after the
+common change has been reviewed and committed, then pin that exact common commit.
+
 Run the standalone tests with:
 
 ```bash
