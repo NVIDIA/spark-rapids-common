@@ -65,7 +65,7 @@ function fixture(t, runners = gpuRunners) {
 
   const f = {
     now: Date.parse('2026-01-01T00:00:00Z'),
-    runs: [], requests: [], events: [], errors: [], logs: [], unexpected: [],
+    runs: [], requests: [], events: [], errors: [], logs: [], sleeps: [], unexpected: [],
     parent: {status: 'in_progress', run_attempt: 1}, source: sourceSha,
     onDispatch() {},
     onCancel(run) { f.finish(run, 'cancelled'); },
@@ -112,6 +112,7 @@ function fixture(t, runners = gpuRunners) {
   t.mock.method(Date, 'now', () => f.now);
   // Mock only the imported sleep, leaving node:test's real timeout active.
   t.mock.method(timers, 'setTimeout', async milliseconds => {
+    f.sleeps.push(milliseconds);
     f.now += milliseconds;
     await f.onSleep(milliseconds);
   });
@@ -119,7 +120,7 @@ function fixture(t, runners = gpuRunners) {
     const parsed = new URL(url);
     const prefix = '/repos/example/consumer';
     const route = parsed.pathname.slice(prefix.length);
-    const request = {route, url: parsed, ...options};
+    const request = {route, url: parsed, at: f.now, ...options};
     f.requests.push(request);
     if (parsed.origin !== env.GITHUB_API_URL || !parsed.pathname.startsWith(`${prefix}/`)) {
       f.unexpected.push(url);
@@ -142,6 +143,8 @@ function fixture(t, runners = gpuRunners) {
         run_attempt: 1, event: 'workflow_dispatch', head_sha: workflowSha,
         display_title: payload.inputs['request-id'], payload,
         job: {
+          id: 1000 + f.runs.length,
+          html_url: `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${100 + f.runs.length}/job/${1000 + f.runs.length}`,
           name: 'worker', status: 'queued', conclusion: null,
           runner_id: 0, runner_name: '', steps: [],
           started_at: new Date(f.now).toISOString(),
@@ -188,7 +191,59 @@ test('primary success forwards immutable inputs and reports the selected run', {
   assert.deepEqual(JSON.parse(f.outputs().runner), gpuRunners[0]);
   assert.equal(f.state(), null);
   assert.equal(f.errors.length, 0);
+  const url = 'https://example.invalid/example/consumer/actions/runs/100';
+  assert.equal(f.logs.at(-1), `View worker job logs here: ${url}/job/1000`);
+  const summary = fs.readFileSync(process.env.GITHUB_STEP_SUMMARY, 'utf8');
+  assert.ok(summary.includes(`[View worker job logs here](${url}/job/1000)`));
+  assert.ok(summary.includes(`[Worker artifacts](${url})`));
 });
+
+for (const [kind, runners] of [['GPU', gpuRunners], ['CPU', cpuRunners]]) {
+  test(`${kind} child metadata is first read after the initial fifteen-second delay`, {timeout: 5000}, async t => {
+    const f = fixture(t, runners);
+    const started = f.now;
+    f.onDispatch = run => f.finish(run, 'success');
+    assert.equal(await f.run(), 0);
+    assert.deepEqual(f.sleeps, [15000]);
+    const reads = f.requests.filter(request => request.route.startsWith('/actions/runs/100'));
+    assert.equal(reads.length, 2);
+    assert.ok(reads.every(request => request.at === started + 15000));
+    assert.ok(f.logs.includes('Child 100: first metadata poll in 15s (within the 120s startup window)'));
+    assert.ok(f.logs.includes('Poll #1: child 100; elapsed 15s; run completed/success; worker success; polling finished'));
+    assert.equal(f.runs.length, 1);
+    assert.equal(f.state(), null);
+  });
+}
+
+for (const status of ['queued', 'in_progress']) {
+  test(`${status} rounds log progress and poll every sixty seconds`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    process.env['INPUT_QUEUE-TIMEOUT-MINUTES'] = '5';
+    process.env['INPUT_EXECUTION-TIMEOUT-MINUTES'] = '5';
+    const started = f.now;
+    f.onDispatch = run => {
+      if (status === 'in_progress') {
+        f.acquire(run);
+        run.status = run.job.status = status;
+      }
+    };
+    let rounds = 0;
+    f.onSleep = milliseconds => {
+      if (milliseconds === 60000 && ++rounds === 2) f.finish(f.runs[0], 'success');
+    };
+    assert.equal(await f.run(), 0);
+    assert.deepEqual(f.sleeps, [15000, 60000, 60000]);
+    assert.deepEqual(f.requests.filter(request => request.route === '/actions/runs/100')
+      .map(request => request.at - started), [15000, 75000, 135000]);
+    assert.deepEqual(f.logs.filter(message => message.startsWith('Poll #')), [
+      `Poll #1: child 100; elapsed 15s; run ${status}; worker ${status}; next poll in 60s (1 minute)`,
+      `Poll #2: child 100; elapsed 75s; run ${status}; worker ${status}; next poll in 60s (1 minute)`,
+      'Poll #3: child 100; elapsed 135s; run completed/success; worker success; polling finished',
+    ]);
+    assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+    assert.equal(f.state(), null);
+  });
+}
 
 test('fallback waits for cancellation completion before dispatching the next pool', {timeout: 5000}, async t => {
   const f = fixture(t);
@@ -196,13 +251,171 @@ test('fallback waits for cancellation completion before dispatching the next poo
   f.onDispatch = run => { if (run.id === 101) f.finish(run, 'success'); };
   f.onCancel = () => { cancelAt = f.now; };
   f.onSleep = () => {
-    if (cancelAt && f.now - cancelAt >= 10000) f.finish(f.runs[0], 'cancelled');
+    if (cancelAt && f.runs[0].status !== 'completed' && f.now - cancelAt >= 10000) {
+      f.finish(f.runs[0], 'cancelled');
+    }
   };
   assert.equal(await f.run(), 0);
   assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled',
     'dispatch:101', 'completed:101:success']);
   assert.deepEqual(JSON.parse(f.runs[1].payload.inputs.runner), gpuRunners[1]);
   assert.equal(f.outputs().attempts, '2');
+  assert.equal(f.state(), null);
+});
+
+for (const entity of ['run', 'job']) {
+  for (const field of ['status', 'conclusion']) {
+    test(`cancellation waits for delayed ${entity} ${field}`, {timeout: 5000}, async t => {
+      const f = fixture(t);
+      let cancelAt;
+      f.onDispatch = run => { if (run.id === 101) f.finish(run, 'success'); };
+      f.onCancel = run => {
+        cancelAt = f.now;
+        run.status = run.job.status = 'completed';
+        run.conclusion = run.job.conclusion = 'cancelled';
+        (entity === 'run' ? run : run.job)[field] = field === 'status' ? 'queued' : null;
+      };
+      f.onSleep = () => {
+        if (cancelAt && f.now - cancelAt >= 10000 && f.runs.length === 1) {
+          f.finish(f.runs[0], 'cancelled');
+        }
+      };
+      assert.equal(await f.run(), 0);
+      assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled',
+        'dispatch:101', 'completed:101:success']);
+      assert.ok(f.requests.find(request => request.method === 'POST' &&
+        request.route.endsWith('/dispatches') && request.at > cancelAt).at >= cancelAt + 10000);
+      assert.ok(f.logs.some(message => message.includes('Cancel confirmation: child 100') &&
+        message.includes('next poll in 5s')));
+      assert.ok(f.logs.some(message => message.includes('cancellation confirmed; polling finished')));
+      assert.equal(f.state(), null);
+    });
+  }
+}
+
+test('cancellation metadata gets a final observation at the deadline', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  let cancelAt;
+  f.onDispatch = run => { if (run.id === 101) f.finish(run, 'success'); };
+  f.onCancel = run => {
+    cancelAt = f.now;
+    run.status = run.job.status = 'completed';
+    run.conclusion = 'cancelled';
+    run.job.conclusion = null;
+  };
+  f.onSleep = () => {
+    if (cancelAt && f.runs.length === 1 && f.now - cancelAt >= 120000) {
+      f.finish(f.runs[0], 'cancelled');
+    }
+  };
+  assert.equal(await f.run(), 0);
+  assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled',
+    'dispatch:101', 'completed:101:success']);
+  assert.ok(f.logs.some(message => message.includes('elapsed 120s/120s') &&
+    message.includes('cancellation confirmed; polling finished')));
+  assert.equal(f.state(), null);
+});
+
+test('cancellation metadata expiry fails with states and never dispatches another worker', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  let cancelAt;
+  f.onCancel = run => {
+    cancelAt = f.now;
+    run.status = run.job.status = 'completed';
+    run.conclusion = 'cancelled';
+    run.job.conclusion = null;
+  };
+  assert.equal(await f.run(), 1);
+  assert.equal(f.now - cancelAt, 120000);
+  assert.equal(f.runs.length, 1);
+  assert.equal(f.events.filter(event => event.startsWith('cancel:')).length, 1);
+  assert.match(f.errors.join('\n'), /Cancellation unconfirmed.*run completed\/cancelled.*worker completed\/pending/);
+  assert.ok(f.logs.some(message => message.includes('next poll in 5s')));
+  assert.equal(f.state(), null);
+});
+
+for (const delay of ['retry-after', 'late response']) {
+  test(`cancellation deadline includes ${delay}`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    let cancelAt;
+    let delayedReads = 0;
+    f.onCancel = run => {
+      cancelAt = f.now;
+      run.status = 'completed';
+      run.conclusion = 'cancelled';
+    };
+    f.beforeRequest = request => {
+      if (cancelAt && f.now - cancelAt >= 115000 && request.route.endsWith('/jobs')) {
+        delayedReads++;
+        if (delay === 'retry-after') {
+          return new Response('{}', {status: 429, headers: {'retry-after': '60'}});
+        }
+        f.now += 6000;
+        f.finish(f.runs[0], 'cancelled');
+        return new Response(JSON.stringify({total_count: 1, jobs: [f.runs[0].job]}), {status: 200});
+      }
+    };
+    assert.equal(await f.run(), 1);
+    assert.equal(f.now - cancelAt, delay === 'retry-after' ? 115000 : 121000);
+    assert.equal(delayedReads, 1);
+    assert.equal(f.runs.length, 1);
+    assert.equal(f.events.filter(event => event.startsWith('cancel:')).length, 1);
+    assert.match(f.errors.join('\n'), /Cancellation unconfirmed.*run completed\/cancelled.*worker queued\/pending/);
+    assert.match(f.errors.join('\n'), /GitHub GET .*\/jobs.*request deadline exhausted/);
+    assert.equal(f.state(), null);
+  });
+}
+
+test('execution detected while waiting for cancellation metadata stops fallback', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  let cancelAt;
+  f.onCancel = run => {
+    cancelAt = f.now;
+    run.status = 'completed';
+    run.conclusion = 'cancelled';
+  };
+  f.onSleep = () => {
+    if (cancelAt) {
+      f.acquire(f.runs[0]);
+      f.finish(f.runs[0], 'cancelled');
+    }
+  };
+  assert.equal(await f.run(), 1);
+  assert.equal(f.now - cancelAt, 5000);
+  assert.equal(f.runs.length, 1);
+  assert.match(f.errors.join('\n'), /Queue cancellation raced execution.*runner_id=123/);
+  assert.equal(f.state(), null);
+});
+
+for (const entity of ['run', 'job']) {
+  test(`non-cancellation terminal ${entity} result stops fallback immediately`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    f.onCancel = run => {
+      run.status = run.job.status = 'completed';
+      run.conclusion = run.job.conclusion = 'cancelled';
+      (entity === 'run' ? run : run.job).conclusion = 'failure';
+    };
+    assert.equal(await f.run(), 1);
+    assert.equal(f.runs.length, 1);
+    assert.match(f.errors.join('\n'), /Queue cancellation ended with a non-cancelled result.*failure/);
+    assert.ok(!f.sleeps.includes(5000));
+    assert.equal(f.state(), null);
+  });
+}
+
+test('identity drift during cancellation confirmation fails without renewed grace', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  let cancelAt;
+  f.onCancel = run => {
+    cancelAt = f.now;
+    run.status = 'completed';
+    run.conclusion = 'cancelled';
+  };
+  f.onSleep = () => { if (cancelAt) f.runs[0].head_sha = 'c'.repeat(40); };
+  assert.equal(await f.run(), 1);
+  assert.equal(f.now - cancelAt, 5000);
+  assert.equal(f.runs.length, 1);
+  assert.match(f.errors.join('\n'), /identity mismatch.*head_sha/);
   assert.equal(f.state(), null);
 });
 
@@ -235,6 +448,29 @@ for (const result of ['failure', 'skipped']) {
     assert.equal(f.runs.length, 1);
     assert.equal(f.events.filter(event => event.startsWith('cancel:')).length, 0);
     assert.match(f.errors.join('\n'), /no workload retry/);
+    assert.equal(f.logs.at(-1),
+      'View worker job logs here: https://example.invalid/example/consumer/actions/runs/100/job/1000');
+    assert.match(fs.readFileSync(process.env.GITHUB_STEP_SUMMARY, 'utf8'),
+      /failed: Worker 100:.*\[View worker job logs here\]\(https:\/\/example\.invalid\/example\/consumer\/actions\/runs\/100\/job\/1000\)/);
+  });
+}
+
+for (const hasJobId of [true, false]) {
+  test(`failure without job html_url: ${hasJobId ? 'use job ID' : 'label run fallback'}`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    f.onDispatch = run => {
+      delete run.job.html_url;
+      if (!hasJobId) delete run.job.id;
+      f.finish(run, 'failure');
+    };
+    assert.equal(await f.run(), 1);
+    const url = 'https://example.invalid/example/consumer/actions/runs/100';
+    assert.equal(f.logs.at(-1), hasJobId
+      ? `View worker job logs here: ${url}/job/1000`
+      : `Job link unavailable; view worker run here: ${url}`);
+    assert.match(f.errors.join('\n'), /Worker 100: failure; no workload retry/);
+    assert.equal(f.runs.length, 1);
+    assert.equal(f.state(), null);
   });
 }
 
@@ -248,6 +484,8 @@ test('execution timeout cancels the acquired runner without fallback', {timeout:
   assert.equal(f.runs.length, 1);
   assert.equal(f.runs[0].conclusion, 'cancelled');
   assert.match(f.errors.join('\n'), /execution timeout; no fallback/);
+  assert.equal(f.logs.at(-1),
+    'View worker job logs here: https://example.invalid/example/consumer/actions/runs/100/job/1000');
 });
 
 test('unconfirmed cancellation preserves cleanup state and never dispatches again', {timeout: 5000}, async t => {
@@ -257,6 +495,8 @@ test('unconfirmed cancellation preserves cleanup state and never dispatches agai
   assert.equal(f.runs.length, 1);
   assert.equal(f.state().id, 100);
   assert.match(f.errors.join('\n'), /Cancellation unconfirmed/);
+  assert.equal(f.logs.at(-1),
+    'View worker job logs here: https://example.invalid/example/consumer/actions/runs/100/job/1000');
 });
 
 test('lost dispatch response is recovered by request identity, not retried', {timeout: 5000}, async t => {
@@ -320,7 +560,7 @@ test('GET rate limiting backs off while keeping dispatch single-shot', {timeout:
   };
   f.onDispatch = run => f.finish(run, 'success');
   assert.equal(await f.run(), 0);
-  assert.equal(f.now - started, 1000);
+  assert.equal(f.now - started, 1000 + 15000);
   assert.equal(f.runs.length, 1);
 });
 
@@ -330,7 +570,7 @@ for (const delay of ['identity', 'run 404', 'jobs 404', 'empty jobs']) {
     const started = f.now;
     f.onDispatch = run => f.finish(run, 'success');
     f.beforeRequest = request => {
-      if (f.now - started >= 10000) return;
+      if (f.now - started >= 20000) return;
       if (request.route === '/actions/runs/100') {
         if (delay === 'run 404') return new Response('', {status: 404});
         if (delay === 'identity') {
@@ -343,9 +583,13 @@ for (const delay of ['identity', 'run 404', 'jobs 404', 'empty jobs']) {
       }
     };
     assert.equal(await f.run(), 0);
-    assert.equal(f.now - started, 10000);
+    assert.equal(f.now - started, 20000);
     assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
-    assert.equal(f.logs.filter(message => message.startsWith('Waiting for child')).length, 2);
+    const pending = f.logs.filter(message => message.includes('metadata pending'));
+    assert.equal(pending.length, 1);
+    assert.match(pending[0], /^Poll #1: child 100; elapsed 15s; metadata pending/);
+    assert.match(pending[0], /next poll in 5s$/);
+    assert.deepEqual(f.sleeps, [15000, 5000]);
     assert.equal(f.errors.length, 0);
     assert.equal(f.state(), null);
   });
@@ -384,13 +628,15 @@ for (const [field, value] of Object.entries({
   test(`confirmed identity changes fail immediately: ${field}`, {timeout: 5000}, async t => {
     const f = fixture(t);
     const started = f.now;
-    f.onSleep = () => { f.runs[0][field] = value; };
+    f.onSleep = milliseconds => {
+      if (milliseconds === 60000) f.runs[0][field] = value;
+    };
     assert.equal(await f.run(), 1);
-    assert.equal(f.now - started, 60000);
+    assert.equal(f.now - started, 15000 + 60000);
     assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled']);
     assert.match(f.errors.join('\n'), /identity mismatch/);
     assert.ok(f.errors.some(message => message.includes(`"field":"${field}"`)));
-    assert.ok(f.logs.every(message => !message.startsWith('Waiting for child')));
+    assert.ok(f.logs.every(message => !message.includes('metadata pending')));
     assert.equal(f.state(), null);
   });
 }
@@ -525,7 +771,7 @@ test('four x86 CPU sizes use ten-minute queues and cancel before each switch', {
   const started = f.now;
   f.onDispatch = run => { if (run.id === 103) f.finish(run, 'success'); };
   assert.equal(await f.run(), 0);
-  assert.equal(f.now - started, 3 * 10 * 60000);
+  assert.equal(f.now - started, 3 * 10 * 60000 + 4 * 15000);
   assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)), runners);
   assert.deepEqual(f.events, [
     'dispatch:100', 'cancel:100', 'completed:100:cancelled',

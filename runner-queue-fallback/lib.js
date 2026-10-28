@@ -41,10 +41,15 @@ function fail(error) {
 function client() {
   const token = input('github-token');
   const root = `${process.env.GITHUB_API_URL}/repos/${process.env.GITHUB_REPOSITORY}`;
-  return async (path, method = 'GET', body) => {
+  return async (path, method = 'GET', body, deadline = Infinity) => {
     const retrySafe = method === 'GET' || path.endsWith('/cancel');
+    const deadlineError = () => Object.assign(
+      new Error(`GitHub ${method} ${path}: request deadline exhausted; no further API retry`),
+      {code: 'API_DEADLINE'});
     // Do not retry dispatch POSTs: an ambiguous response may already have created a run.
     for (let attempt = 0; ; attempt++) {
+      const budgetRemaining = deadline - Date.now();
+      if (budgetRemaining < 0) throw deadlineError();
       let response;
       try {
         response = await fetch(`${root}${path}`, {
@@ -57,20 +62,23 @@ function client() {
             'User-Agent': 'runner-queue-fallback',
           },
           body: body === undefined ? undefined : JSON.stringify(body),
-          signal: AbortSignal.timeout(15000),
+          signal: AbortSignal.timeout(Math.max(1, Math.min(15000, budgetRemaining))),
           redirect: 'error',
         });
         const text = await response.text();
+        if (Date.now() > deadline) throw deadlineError();
         if (response.ok) {
           const result = text.trim() ? JSON.parse(text) : null;
           if (attempt) console.log(`GitHub ${method} ${path}: recovered on attempt ${attempt + 1}`);
           return result;
         }
       } catch (error) {
+        if (error.code === 'API_DEADLINE') throw error;
         const cause = String(error.message).replaceAll(token, '***').replace(/[\r\n]/g, ' ').slice(0,300);
         const reason = `${error.cause?.code || error.name}: ${cause}`;
         if (retrySafe && attempt < 2) {
           const wait = (attempt + 1) * 5000;
+          if (Date.now() + wait > deadline) throw deadlineError();
           console.log(`GitHub ${method} ${path}: ${reason}; retrying in ${wait / 1000}s`);
           await sleep(wait);
           continue;
@@ -90,6 +98,7 @@ function client() {
           : rateLimited ? 30000 : (attempt + 1) * 5000;
       const transient = rateLimited || response.status === 408 || response.status >= 500;
       if (retrySafe && transient && attempt < 2 && Number.isFinite(wait) && wait <= 60000) {
+        if (Date.now() + Math.max(1000, wait) > deadline) throw deadlineError();
         console.log(`GitHub ${method} ${path}: HTTP ${response.status}; retrying in ${Math.max(1, Math.ceil(wait / 1000))}s`);
         await sleep(Math.max(1000, wait));
         continue;
@@ -128,14 +137,14 @@ function acquired(job) {
       (step.status === 'completed' && step.conclusion !== 'skipped'))));
 }
 
-async function snapshot(api, active, metadataDeadline = 0) {
+async function snapshot(api, active, metadataDeadline = 0, requestDeadline = Infinity) {
   const pending = message => {
     if (Date.now() < metadataDeadline) return {metadataPending: message};
     throw new Error(`Child ${active.id}: ${message}`);
   };
   let run;
   try {
-    run = await api(`/actions/runs/${active.id}`);
+    run = await api(`/actions/runs/${active.id}`, 'GET', undefined, requestDeadline);
   } catch (error) {
     if (error.status === 404) return pending(error.message);
     throw error;
@@ -152,7 +161,7 @@ async function snapshot(api, active, metadataDeadline = 0) {
   }
   let data;
   try {
-    data = await api(`/actions/runs/${active.id}/attempts/1/jobs?per_page=100`);
+    data = await api(`/actions/runs/${active.id}/attempts/1/jobs?per_page=100`, 'GET', undefined, requestDeadline);
   } catch (error) {
     if (error.status === 404) return pending(error.message);
     throw error;
@@ -167,21 +176,61 @@ async function snapshot(api, active, metadataDeadline = 0) {
   return {run, job: data.jobs[0]};
 }
 
-async function cancel(api, id) {
+async function cancel(api, id, queuedWorker = null) {
   const run = await api(`/actions/runs/${id}`);
-  if (run.status === 'completed') return;
-  try {
-    await api(`/actions/runs/${id}/cancel`, 'POST');
-  } catch (error) {
-    // 409 can mean the run finished between GET and POST. Still confirm completion below.
-    if (error.status !== 409) throw error;
+  if (run.status === 'completed' && !queuedWorker) return;
+  if (run.status !== 'completed') {
+    try {
+      await api(`/actions/runs/${id}/cancel`, 'POST');
+    } catch (error) {
+      // 409 can mean the run finished between GET and POST. Still confirm completion below.
+      if (error.status !== 409) throw error;
+    }
   }
-  const deadline = Date.now() + 120000;
-  do {
-    if ((await api(`/actions/runs/${id}`)).status === 'completed') return;
-    await sleep(5000);
-  } while (Date.now() < deadline);
-  throw new Error(`Cancellation unconfirmed for child ${id}; no further dispatch is allowed`);
+  const startedAt = Date.now();
+  const deadline = startedAt + 120000;
+  let lastObservation = '';
+  while (true) {
+    let progress;
+    if (queuedWorker) {
+      // Run and job cancellation metadata can converge at different times.
+      let state;
+      try {
+        state = await snapshot(api, queuedWorker, 0, deadline);
+      } catch (error) {
+        if (error.code !== 'API_DEADLINE') throw error;
+        lastObservation += `; ${error.message}`;
+        break;
+      }
+      const {run, job} = state;
+      const execution = acquired(job);
+      lastObservation = `run ${run.status}/${run.conclusion ?? 'pending'}; ` +
+        `worker ${job.status}/${job.conclusion ?? 'pending'}; runner_id=${job.runner_id ?? 0}; ` +
+        `runner_name=${JSON.stringify(job.runner_name ?? '')}; execution_detected=${execution}`;
+      progress = `Cancel confirmation: child ${id}; elapsed ${Math.round((Date.now() - startedAt) / 1000)}s/120s; ${lastObservation}`;
+      if (execution) {
+        throw new Error(`Queue cancellation raced execution; no fallback; ${progress}`);
+      }
+      if ((run.conclusion && run.conclusion !== 'cancelled') ||
+          (job.conclusion && job.conclusion !== 'cancelled')) {
+        throw new Error(`Queue cancellation ended with a non-cancelled result; no fallback; ${progress}`);
+      }
+      if (run.status === 'completed' && run.conclusion === 'cancelled' &&
+          job.status === 'completed' && job.conclusion === 'cancelled') {
+        console.log(`${progress}; cancellation confirmed; polling finished`);
+        return;
+      }
+    } else if ((await api(`/actions/runs/${id}`)).status === 'completed') {
+      return;
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    if (progress) console.log(`${progress}; next poll in ${Math.min(5000, remaining) / 1000}s`);
+    await sleep(Math.min(5000, remaining));
+  }
+  throw new Error(`Cancellation unconfirmed for child ${id} after ${Math.round((Date.now() - startedAt) / 1000)}s` +
+    ' (120s confirmation window); no further dispatch is allowed' +
+    (lastObservation ? `; last observation: ${lastObservation}` : ''));
 }
 
 async function cleanup(api, active) {

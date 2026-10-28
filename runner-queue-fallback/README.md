@@ -214,7 +214,14 @@ trigger are unchanged; rerun the parent, not the dispatched worker.
   are **not retried**. No skipped, missing, cancelled or unsuccessful required job
   can produce a successful coordinator.
 - A queue timeout triggers a fresh state read, cancellation and completion
-  confirmation before another dispatch. If the job acquires a runner during
+  confirmation before another dispatch. Run and job metadata are checked together
+  every five seconds within one two-minute cancellation confirmation window; both
+  must be completed/cancelled with no allocation or execution evidence. Each poll
+  logs both states and runner allocation, tolerating delayed status/conclusion updates
+  without relaxing identity validation. Expiry reports the last observation and stops
+  without another dispatch. Queue-cancellation reads and their retries share that
+  deadline; a response arriving after it cannot authorize fallback.
+  If the job acquires a runner during
   cancellation, stop with an explicit race error rather than run the workload again.
   GitHub has no atomic cancel-only-if-queued operation: that race can interrupt a
   just-started job, but cannot silently cause a fallback retry.
@@ -223,7 +230,8 @@ trigger are unchanged; rerun the parent, not the dispatched worker.
   dispatch. Keep `workflow-ref` stable during a sequence; a protected tag can avoid
   failures caused by unrelated changes to `main`.
 - A newly dispatched child gets a two-minute startup window for run identity and
-  job metadata to become visible, checked every five seconds. Temporary child/job
+  job metadata to become visible. The first check waits fifteen seconds, counted within
+  that window; pending metadata is then checked every five seconds. Temporary child/job
   HTTP 404 responses are retried only during startup. Identity must match exactly
   before accepting any result; later identity changes fail immediately. Expiry
   reports the last API error or expected/actual fields and cleans up, without
@@ -239,12 +247,17 @@ trigger are unchanged; rerun the parent, not the dispatched worker.
   workload needs correspondingly larger parent and child timeouts.
 - Logs and the parent step summary report candidates, observed waits, child links
   and outcomes, including the primary error and confirmed/unconfirmed cleanup.
+  Success, failure and cleanup messages repeat an explicit "View worker job logs here"
+  link directly to the worker job. The summary separately links to the run's artifacts.
+  If neither a job URL nor job ID is available, the run link is labelled as a fallback.
+  Worker output is not copied into the parent.
   Outputs `run-id`, `run-url`, `runner` and `attempts` identify the last dispatch.
   All exhausted queues fail the parent check.
-- Poll once per minute while queued and once per two minutes while executing:
-  approximately 240 or 120 read requests/hour per coordinator, respectively, plus
-  dispatch/cleanup overhead. Keep the example's single active coordinator per repo
-  initially; tokens share a repository API quota. Reads and cancellation honor
+- Poll once per minute while queued or executing: approximately 240 read requests/hour
+  per coordinator, plus dispatch/cleanup overhead. Each waiting round logs its number,
+  child ID, observed status, elapsed time since dispatch and next polling interval;
+  completion logs explicitly say polling has finished. Keep the example's single active
+  coordinator per repo initially; tokens share a repository API quota. Reads and cancellation honor
   rate-limit reset/Retry-After headers with at most two retries of at most one minute
   each. Network/timeouts, malformed JSON, HTTP 408 and HTTP 5xx responses also get
   at most two retries for reads/cancellation, normally after 5s and 10s. Dispatch

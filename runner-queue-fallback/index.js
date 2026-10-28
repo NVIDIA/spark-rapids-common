@@ -85,10 +85,13 @@ async function main() {
   const report = (active, outcome, queuedAt) => {
     const wait = queuedAt ? `; observed queue wait ${Math.round((Date.now() - queuedAt) / 1000)}s` : '';
     const line = `${active.runner.labels}: ${outcome}${wait}; child ${active.id}`;
+    const logUrl = active.jobUrl || active.url;
+    const logLabel = active.jobUrl ? 'View worker job logs here' : 'Job link unavailable; view worker run here';
     console.log(line);
+    console.log(`${logLabel}: ${logUrl}`);
     if (process.env.GITHUB_STEP_SUMMARY) {
       fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
-        `- ${line} ([run](${active.url}))\n`);
+        `- ${line} ([${logLabel}](${logUrl}); [Worker artifacts](${active.url}))\n`);
     }
   };
 
@@ -130,10 +133,14 @@ async function main() {
 
       const dispatchedAt = Date.now();
       const jobDeadline = dispatchedAt + 120000;
+      console.log(`Child ${active.id}: first metadata poll in 15s (within the 120s startup window)`);
+      await sleep(15000);
       let identityConfirmed = false;
       let queuedAt;
       let startedAt;
+      let pollRound = 0;
       while (true) {
+        pollRound++;
         await ensureCurrent();
         // Dispatch can return before the child's run metadata has finished initializing.
         let state;
@@ -147,17 +154,24 @@ async function main() {
           throw error;
         }
         const {run, job, metadataPending} = state;
+        const progress = `Poll #${pollRound}: child ${active.id}; elapsed ${Math.round((Date.now() - dispatchedAt) / 1000)}s`;
         if (metadataPending) {
-          console.log(`Waiting for child ${active.id} metadata (${Math.round((Date.now() - dispatchedAt) / 1000)}s/120s): ${metadataPending}`);
+          console.log(`${progress}; metadata pending (120s startup window): ${metadataPending}; next poll in 5s`);
           await sleep(5000);
           continue;
         }
         identityConfirmed = true;
+        const jobUrl = job?.html_url || (job?.id ? `${active.url}/job/${job.id}` : null);
+        if (jobUrl && jobUrl !== active.jobUrl) {
+          active.jobUrl = jobUrl;
+          save(active);
+        }
         if (acquired(job) && !startedAt) {
           startedAt = Date.now();
           report(active, 'runner acquired; fallback disabled', queuedAt);
         }
         if (run.status === 'completed') {
+          console.log(`${progress}; run completed/${run.conclusion}; worker ${job?.conclusion}; polling finished`);
           report(active, `completed: ${run.conclusion}`, undefined);
           if (run.conclusion !== 'success' || job?.conclusion !== 'success' || !startedAt) {
             throw new Error(`Worker ${active.id}: ${run.conclusion}; no workload retry`);
@@ -178,12 +192,7 @@ async function main() {
             const latest = await snapshot(api, active);
             if (acquired(latest.job) || latest.run.status === 'completed') continue;
             if (latest.job?.status !== 'queued') throw new Error('Child left the runner queue; no fallback');
-            await cancel(api, active.id);
-            const stopped = await snapshot(api, active);
-            if (acquired(stopped.job) || stopped.run.conclusion !== 'cancelled' ||
-                stopped.job?.conclusion !== 'cancelled') {
-              throw new Error('Queue cancellation raced execution or has an ambiguous outcome; no fallback');
-            }
+            await cancel(api, active.id, active);
             report(active, 'queue timeout; cancellation confirmed', queuedAt);
             active = null;
             save(null);
@@ -192,8 +201,8 @@ async function main() {
         } else if (job) {
           throw new Error(`Child state ${job.status} is not a runner queue; no fallback`);
         }
-        // Repository tokens share an API budget. Execution needs less frequent observation.
-        await sleep(startedAt ? 120000 : 60000);
+        console.log(`${progress}; run ${run.status}; worker ${job?.status}; next poll in 60s (1 minute)`);
+        await sleep(60000);
       }
     }
     throw new Error('All runner candidates exhausted their queue deadlines');
