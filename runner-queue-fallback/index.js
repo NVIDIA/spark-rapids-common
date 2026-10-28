@@ -130,10 +130,14 @@ async function main() {
 
       const dispatchedAt = Date.now();
       const jobDeadline = dispatchedAt + 120000;
+      console.log(`Child ${active.id}: first metadata poll in 5s (within the 120s startup window)`);
+      await sleep(5000);
       let identityConfirmed = false;
       let queuedAt;
       let startedAt;
+      let pollRound = 0;
       while (true) {
+        pollRound++;
         await ensureCurrent();
         // Dispatch can return before the child's run metadata has finished initializing.
         let state;
@@ -147,8 +151,9 @@ async function main() {
           throw error;
         }
         const {run, job, metadataPending} = state;
+        const progress = `Poll #${pollRound}: child ${active.id}; elapsed ${Math.round((Date.now() - dispatchedAt) / 1000)}s`;
         if (metadataPending) {
-          console.log(`Waiting for child ${active.id} metadata (${Math.round((Date.now() - dispatchedAt) / 1000)}s/120s): ${metadataPending}`);
+          console.log(`${progress}; metadata pending (120s startup window): ${metadataPending}; next poll in 5s`);
           await sleep(5000);
           continue;
         }
@@ -158,6 +163,7 @@ async function main() {
           report(active, 'runner acquired; fallback disabled', queuedAt);
         }
         if (run.status === 'completed') {
+          console.log(`${progress}; run completed/${run.conclusion}; worker ${job?.conclusion}; polling finished`);
           report(active, `completed: ${run.conclusion}`, undefined);
           if (run.conclusion !== 'success' || job?.conclusion !== 'success' || !startedAt) {
             throw new Error(`Worker ${active.id}: ${run.conclusion}; no workload retry`);
@@ -192,8 +198,8 @@ async function main() {
         } else if (job) {
           throw new Error(`Child state ${job.status} is not a runner queue; no fallback`);
         }
-        // Repository tokens share an API budget. Execution needs less frequent observation.
-        await sleep(startedAt ? 120000 : 60000);
+        console.log(`${progress}; run ${run.status}; worker ${job?.status}; next poll in 60s (1 minute)`);
+        await sleep(60000);
       }
     }
     throw new Error('All runner candidates exhausted their queue deadlines');

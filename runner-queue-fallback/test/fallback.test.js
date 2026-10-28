@@ -65,7 +65,7 @@ function fixture(t, runners = gpuRunners) {
 
   const f = {
     now: Date.parse('2026-01-01T00:00:00Z'),
-    runs: [], requests: [], events: [], errors: [], logs: [], unexpected: [],
+    runs: [], requests: [], events: [], errors: [], logs: [], sleeps: [], unexpected: [],
     parent: {status: 'in_progress', run_attempt: 1}, source: sourceSha,
     onDispatch() {},
     onCancel(run) { f.finish(run, 'cancelled'); },
@@ -112,6 +112,7 @@ function fixture(t, runners = gpuRunners) {
   t.mock.method(Date, 'now', () => f.now);
   // Mock only the imported sleep, leaving node:test's real timeout active.
   t.mock.method(timers, 'setTimeout', async milliseconds => {
+    f.sleeps.push(milliseconds);
     f.now += milliseconds;
     await f.onSleep(milliseconds);
   });
@@ -119,7 +120,7 @@ function fixture(t, runners = gpuRunners) {
     const parsed = new URL(url);
     const prefix = '/repos/example/consumer';
     const route = parsed.pathname.slice(prefix.length);
-    const request = {route, url: parsed, ...options};
+    const request = {route, url: parsed, at: f.now, ...options};
     f.requests.push(request);
     if (parsed.origin !== env.GITHUB_API_URL || !parsed.pathname.startsWith(`${prefix}/`)) {
       f.unexpected.push(url);
@@ -190,13 +191,62 @@ test('primary success forwards immutable inputs and reports the selected run', {
   assert.equal(f.errors.length, 0);
 });
 
+for (const [kind, runners] of [['GPU', gpuRunners], ['CPU', cpuRunners]]) {
+  test(`${kind} child metadata is first read after the initial five-second delay`, {timeout: 5000}, async t => {
+    const f = fixture(t, runners);
+    const started = f.now;
+    f.onDispatch = run => f.finish(run, 'success');
+    assert.equal(await f.run(), 0);
+    assert.deepEqual(f.sleeps, [5000]);
+    const reads = f.requests.filter(request => request.route.startsWith('/actions/runs/100'));
+    assert.equal(reads.length, 2);
+    assert.ok(reads.every(request => request.at === started + 5000));
+    assert.ok(f.logs.includes('Child 100: first metadata poll in 5s (within the 120s startup window)'));
+    assert.ok(f.logs.includes('Poll #1: child 100; elapsed 5s; run completed/success; worker success; polling finished'));
+    assert.equal(f.runs.length, 1);
+    assert.equal(f.state(), null);
+  });
+}
+
+for (const status of ['queued', 'in_progress']) {
+  test(`${status} rounds log progress and poll every sixty seconds`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    process.env['INPUT_QUEUE-TIMEOUT-MINUTES'] = '5';
+    process.env['INPUT_EXECUTION-TIMEOUT-MINUTES'] = '5';
+    const started = f.now;
+    f.onDispatch = run => {
+      if (status === 'in_progress') {
+        f.acquire(run);
+        run.status = run.job.status = status;
+      }
+    };
+    let rounds = 0;
+    f.onSleep = milliseconds => {
+      if (milliseconds === 60000 && ++rounds === 2) f.finish(f.runs[0], 'success');
+    };
+    assert.equal(await f.run(), 0);
+    assert.deepEqual(f.sleeps, [5000, 60000, 60000]);
+    assert.deepEqual(f.requests.filter(request => request.route === '/actions/runs/100')
+      .map(request => request.at - started), [5000, 65000, 125000]);
+    assert.deepEqual(f.logs.filter(message => message.startsWith('Poll #')), [
+      `Poll #1: child 100; elapsed 5s; run ${status}; worker ${status}; next poll in 60s (1 minute)`,
+      `Poll #2: child 100; elapsed 65s; run ${status}; worker ${status}; next poll in 60s (1 minute)`,
+      'Poll #3: child 100; elapsed 125s; run completed/success; worker success; polling finished',
+    ]);
+    assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+    assert.equal(f.state(), null);
+  });
+}
+
 test('fallback waits for cancellation completion before dispatching the next pool', {timeout: 5000}, async t => {
   const f = fixture(t);
   let cancelAt;
   f.onDispatch = run => { if (run.id === 101) f.finish(run, 'success'); };
   f.onCancel = () => { cancelAt = f.now; };
   f.onSleep = () => {
-    if (cancelAt && f.now - cancelAt >= 10000) f.finish(f.runs[0], 'cancelled');
+    if (cancelAt && f.runs[0].status !== 'completed' && f.now - cancelAt >= 10000) {
+      f.finish(f.runs[0], 'cancelled');
+    }
   };
   assert.equal(await f.run(), 0);
   assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled',
@@ -320,7 +370,7 @@ test('GET rate limiting backs off while keeping dispatch single-shot', {timeout:
   };
   f.onDispatch = run => f.finish(run, 'success');
   assert.equal(await f.run(), 0);
-  assert.equal(f.now - started, 1000);
+  assert.equal(f.now - started, 1000 + 5000);
   assert.equal(f.runs.length, 1);
 });
 
@@ -345,7 +395,11 @@ for (const delay of ['identity', 'run 404', 'jobs 404', 'empty jobs']) {
     assert.equal(await f.run(), 0);
     assert.equal(f.now - started, 10000);
     assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
-    assert.equal(f.logs.filter(message => message.startsWith('Waiting for child')).length, 2);
+    const pending = f.logs.filter(message => message.includes('metadata pending'));
+    assert.equal(pending.length, 1);
+    assert.match(pending[0], /^Poll #1: child 100; elapsed 5s; metadata pending/);
+    assert.match(pending[0], /next poll in 5s$/);
+    assert.deepEqual(f.sleeps, [5000, 5000]);
     assert.equal(f.errors.length, 0);
     assert.equal(f.state(), null);
   });
@@ -384,13 +438,15 @@ for (const [field, value] of Object.entries({
   test(`confirmed identity changes fail immediately: ${field}`, {timeout: 5000}, async t => {
     const f = fixture(t);
     const started = f.now;
-    f.onSleep = () => { f.runs[0][field] = value; };
+    f.onSleep = milliseconds => {
+      if (milliseconds === 60000) f.runs[0][field] = value;
+    };
     assert.equal(await f.run(), 1);
-    assert.equal(f.now - started, 60000);
+    assert.equal(f.now - started, 5000 + 60000);
     assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled']);
     assert.match(f.errors.join('\n'), /identity mismatch/);
     assert.ok(f.errors.some(message => message.includes(`"field":"${field}"`)));
-    assert.ok(f.logs.every(message => !message.startsWith('Waiting for child')));
+    assert.ok(f.logs.every(message => !message.includes('metadata pending')));
     assert.equal(f.state(), null);
   });
 }
@@ -525,7 +581,7 @@ test('four x86 CPU sizes use ten-minute queues and cancel before each switch', {
   const started = f.now;
   f.onDispatch = run => { if (run.id === 103) f.finish(run, 'success'); };
   assert.equal(await f.run(), 0);
-  assert.equal(f.now - started, 3 * 10 * 60000);
+  assert.equal(f.now - started, 3 * 10 * 60000 + 4 * 5000);
   assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)), runners);
   assert.deepEqual(f.events, [
     'dispatch:100', 'cancel:100', 'completed:100:cancelled',
