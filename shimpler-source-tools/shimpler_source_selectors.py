@@ -36,7 +36,7 @@ SourceSelector = namedtuple('SourceSelector', 'kind targets other_components')
 
 def spark_minor(target):
     """Return the major/minor encoded by the repository's Spark buildver."""
-    match = re.match(r'^([0-9])([0-9])[0-9](?:db.*)?$', target)
+    match = re.match(r'^([0-9])([0-9])[0-9](?:[a-z][a-z0-9]*)?$', target)
     if match is None:
         raise ValueError('sameMinor requires a three-digit Spark build target: %s' % target)
     return match.group(1), match.group(2)

@@ -233,6 +233,18 @@ class SourceToolsTest(unittest.TestCase):
         self.assertEqual(resolve_sources(graph, variants, '406')[logical].physical_path,
                          str(base))
 
+    def test_same_minor_accepts_vendor_suffixed_build_targets(self):
+        graph = {'404': None, '405': '404', '405db': '405',
+                 '405emr': '405', '411': '405'}
+        base = self.source('404', 'Vendor.scala',
+                           '{"spark":["404"],"carryForward":"sameMinor"}')
+        variants, _ = scan_module_sources(str(self.module), graph)
+        logical = 'src/main/scala/pkg/Vendor.scala'
+        for target in ('405db', '405emr'):
+            self.assertEqual(resolve_sources(graph, variants, target)[logical].physical_path,
+                             str(base))
+        self.assertNotIn(logical, resolve_sources(graph, variants, '411'))
+
     def test_shadow_requires_oracle_for_same_minor_selector(self):
         graph = {'404': None, '405': '404'}
         self.source('404', 'Patch.scala',

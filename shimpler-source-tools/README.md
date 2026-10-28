@@ -9,7 +9,7 @@ Use one selector form for exact targets and inherited roots:
 
 ```json
 {"spark":["330","331"],"carryForward":"none"}
-{"spark":["400"],"carryForward":"sameMinor"}
+{"spark":["404"],"carryForward":"sameMinor"}
 {"spark":["330","350","400","420"],"carryForward":"all"}
 ```
 
