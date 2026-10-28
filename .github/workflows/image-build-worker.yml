@@ -1,0 +1,148 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Image build worker
+run-name: ${{ inputs.request-id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request-id:
+        required: true
+        type: string
+      parent-run-id:
+        required: true
+        type: string
+      parent-run-attempt:
+        required: true
+        type: string
+      source-ref:
+        required: true
+        type: string
+      source-sha:
+        required: true
+        type: string
+      runner:
+        required: true
+        type: string
+      workload:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  worker:
+    name: worker
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    steps:
+      - name: Check coordinator and source
+        uses: NVIDIA/spark-rapids-common/runner-queue-fallback/guard@main
+        with:
+          request-id: ${{ inputs.request-id }}
+          parent-run-id: ${{ inputs.parent-run-id }}
+          parent-run-attempt: ${{ inputs.parent-run-attempt }}
+          source-ref: ${{ inputs.source-ref }}
+          source-sha: ${{ inputs.source-sha }}
+      - name: Restrict publication to main on an x86 CPU runner
+        shell: bash
+        env:
+          SOURCE_REF: ${{ inputs.source-ref }}
+          SOURCE_SHA: ${{ inputs.source-sha }}
+          SELECTED_RUNNER: ${{ inputs.runner }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == NVIDIA/spark-rapids-common ]]
+          [[ "$GITHUB_REF" == refs/heads/main && "$SOURCE_REF" == "$GITHUB_REF" ]]
+          [[ "$SOURCE_SHA" == "$GITHUB_SHA" ]]
+          [[ "$RUNNER_OS" == Linux && "$RUNNER_ARCH" == X64 ]]
+          jq -e '.group == "nv-cpu-general" and
+            (.labels | test("^linux-amd64-cpu(4|8|16|32)$"))' <<< "$SELECTED_RUNNER"
+      - name: Checkout image source
+        uses: NVIDIA/spark-rapids-common/checkout@main
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Select image from the trusted catalog
+        id: image
+        shell: bash
+        env:
+          IMAGE_NAME: ${{ fromJSON(inputs.workload).image }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_NAME" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]]
+          config=$(jq -ce --arg name "$IMAGE_NAME" \
+            '.[$name] | select(type == "object")' .github/image-builds.json)
+          printf 'config=%s\n' "$config" >> "$GITHUB_OUTPUT"
+      - name: Set up emulation
+        uses: docker/setup-qemu-action@v4.4.0
+        with:
+          platforms: arm64
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+      - name: Build, verify, and publish
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          IMAGE_NAME: ${{ fromJSON(inputs.workload).image }}
+          BUILD_CONTEXT: ${{ fromJSON(steps.image.outputs.config).context }}
+          DOCKERFILE: ${{ fromJSON(steps.image.outputs.config).dockerfile }}
+          PLATFORMS: ${{ join(fromJSON(steps.image.outputs.config).platforms, ',') }}
+          PUBLISH_TAG: ${{ fromJSON(steps.image.outputs.config).tag }}
+          SMOKE_TEST: ${{ fromJSON(steps.image.outputs.config).smoke-test }}
+        run: |
+          set -euo pipefail
+          [[ -d "$BUILD_CONTEXT" && -f "$DOCKERFILE" && -f "$SMOKE_TEST" ]]
+          [[ "$PUBLISH_TAG" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]]
+          IFS=, read -r -a platforms <<< "$PLATFORMS"
+          (( ${#platforms[@]} > 0 ))
+          for platform in "${platforms[@]}"; do
+            case "$platform" in
+              linux/amd64|linux/arm64) ;;
+              *) echo "::error::Unsupported image platform: $platform"; exit 1 ;;
+            esac
+          done
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}/$IMAGE_NAME"
+          anonymous_config=$(mktemp -d)
+          metadata=$(mktemp)
+          trap 'docker logout ghcr.io; rm -rf "$anonymous_config"; rm -f "$metadata"' EXIT
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
+
+          candidate="$IMAGE:build-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker buildx build --pull --platform "$PLATFORMS" --file "$DOCKERFILE" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --tag "$candidate" --metadata-file "$metadata" --push "$BUILD_CONTEXT"
+          digest=$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' "$metadata")
+          reference="$IMAGE@$digest"
+
+          # A public repository does not make a newly created GHCR package public.
+          for platform in "${platforms[@]}"; do
+            if ! docker --config "$anonymous_config" pull --platform "$platform" "$reference"; then
+              echo "::error::Anonymous image pull failed. Verify GHCR availability and public package visibility, then rerun. The $PUBLISH_TAG tag has not been updated."
+              exit 1
+            fi
+            bash "$SMOKE_TEST" "$reference" "$platform"
+          done
+
+          docker buildx imagetools create --tag "$IMAGE:$PUBLISH_TAG" "$reference"
+          printf 'Published %s:%s from %s. Configured platforms passed anonymous pulls and image smoke checks.\n' \
+            "$IMAGE" "$PUBLISH_TAG" "$reference" >> "$GITHUB_STEP_SUMMARY"

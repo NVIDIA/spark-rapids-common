@@ -1,0 +1,9 @@
+{
+  "signoff-check": {
+    "context": "signoff-check",
+    "dockerfile": "signoff-check/Dockerfile",
+    "platforms": ["linux/amd64", "linux/arm64"],
+    "tag": "v1",
+    "smoke-test": "signoff-check/smoke-test.sh"
+  }
+}

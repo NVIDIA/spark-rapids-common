@@ -5,3 +5,6 @@
 ## Introduction
 
 This repository contains reusable GitHub Action workflows and common scripts used by Spark RAPIDS.
+
+- [Runner queue fallback](runner-queue-fallback/README.md): shared runner acquisition
+  and cleanup for repository-owned CPU and GPU workflows.
