@@ -222,6 +222,12 @@ trigger are unchanged; rerun the parent, not the dispatched worker.
   and clean up the active child. The workflow-definition SHA is checked for each
   dispatch. Keep `workflow-ref` stable during a sequence; a protected tag can avoid
   failures caused by unrelated changes to `main`.
+- A newly dispatched child gets a two-minute startup window for run identity and
+  job metadata to become visible, checked every five seconds. Temporary child/job
+  HTTP 404 responses are retried only during startup. Identity must match exactly
+  before accepting any result; later identity changes fail immediately. Expiry
+  reports the last API error or expected/actual fields and cleans up, without
+  dispatching another worker. In-flight requests can extend the observation window.
 - Normal errors clean up immediately. A JavaScript post action also cancels the
   active child on parent cancellation. The child's startup guard rejects stale
   source, a completed parent or a rerun. Abrupt coordinator runner loss or GitHub
@@ -232,15 +238,20 @@ trigger are unchanged; rerun the parent, not the dispatched worker.
   execution and overhead. Defaults allow 180 minutes of execution; a longer real
   workload needs correspondingly larger parent and child timeouts.
 - Logs and the parent step summary report candidates, observed waits, child links
-  and outcomes. Outputs `run-id`, `run-url`, `runner` and `attempts` identify the last
-  dispatch. All exhausted queues fail the parent check.
+  and outcomes, including the primary error and confirmed/unconfirmed cleanup.
+  Outputs `run-id`, `run-url`, `runner` and `attempts` identify the last dispatch.
+  All exhausted queues fail the parent check.
 - Poll once per minute while queued and once per two minutes while executing:
   approximately 240 or 120 read requests/hour per coordinator, respectively, plus
   dispatch/cleanup overhead. Keep the example's single active coordinator per repo
   initially; tokens share a repository API quota. Reads and cancellation honor
   rate-limit reset/Retry-After headers with at most two retries of at most one minute
-  each. Longer quota exhaustion fails closed and can prevent cleanup, like an API
-  outage. Polling and API delays mean queue deadlines are not exact wall-clock caps.
+  each. Network/timeouts, malformed JSON, HTTP 408 and HTTP 5xx responses also get
+  at most two retries for reads/cancellation, normally after 5s and 10s. Dispatch
+  POSTs are never retried; authentication/permission failures fail immediately.
+  Persistent errors report the method, API path, attempts and status/request ID
+  or transport error. Longer outages fail closed and can prevent cleanup. Polling
+  and API delays mean queue deadlines are not exact wall-clock caps.
 
 This uses GitHub's `2026-03-10` REST API, including the dispatch response run ID.
 GitHub Enterprise Server versions without that API contract are not supported.

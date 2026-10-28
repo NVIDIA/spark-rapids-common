@@ -128,12 +128,31 @@ async function main() {
       output('attempts', i + 1);
       console.log(`Candidate ${i + 1}/${runners.length}: ${active.runner.labels}; ${active.url}`);
 
-      const jobDeadline = Date.now() + 120000;
+      const dispatchedAt = Date.now();
+      const jobDeadline = dispatchedAt + 120000;
+      let identityConfirmed = false;
       let queuedAt;
       let startedAt;
       while (true) {
         await ensureCurrent();
-        const {run, job} = await snapshot(api, active);
+        // Dispatch can return before the child's run metadata has finished initializing.
+        let state;
+        try {
+          state = await snapshot(api, active, identityConfirmed ? 0 : jobDeadline);
+        } catch (error) {
+          if (!identityConfirmed && Date.now() >= jobDeadline) {
+            throw new Error(`Worker metadata did not become valid within the 120s startup window` +
+              `; last observation: ${error.message}`);
+          }
+          throw error;
+        }
+        const {run, job, metadataPending} = state;
+        if (metadataPending) {
+          console.log(`Waiting for child ${active.id} metadata (${Math.round((Date.now() - dispatchedAt) / 1000)}s/120s): ${metadataPending}`);
+          await sleep(5000);
+          continue;
+        }
+        identityConfirmed = true;
         if (acquired(job) && !startedAt) {
           startedAt = Date.now();
           report(active, 'runner acquired; fallback disabled', queuedAt);
@@ -148,7 +167,6 @@ async function main() {
           save(null);
           return;
         }
-        if (!job && Date.now() > jobDeadline) throw new Error('Worker job was not created; no fallback');
         if (startedAt) {
           if (Date.now() - startedAt >= executionLimit) {
             throw new Error(`Worker ${active.id}: execution timeout; no fallback`);
@@ -182,10 +200,17 @@ async function main() {
   } catch (error) {
     // Keep the primary failure visible even if cleanup encounters a separate API error.
     fail(error);
+    if (active?.id) report(active, `failed: ${error.message}`);
   } finally {
     // The post action covers parent cancellation that terminates this process before finally runs.
-    await cleanup(api, active);
-    save(null);
+    try {
+      await cleanup(api, active);
+      if (active?.id) report(active, 'cleanup confirmed; child is no longer running');
+      save(null);
+    } catch (error) {
+      if (active?.id) report(active, `cleanup unconfirmed: ${error.message}; check the child run`);
+      throw error;
+    }
   }
 }
 
