@@ -263,6 +263,162 @@ test('fallback waits for cancellation completion before dispatching the next poo
   assert.equal(f.state(), null);
 });
 
+for (const entity of ['run', 'job']) {
+  for (const field of ['status', 'conclusion']) {
+    test(`cancellation waits for delayed ${entity} ${field}`, {timeout: 5000}, async t => {
+      const f = fixture(t);
+      let cancelAt;
+      f.onDispatch = run => { if (run.id === 101) f.finish(run, 'success'); };
+      f.onCancel = run => {
+        cancelAt = f.now;
+        run.status = run.job.status = 'completed';
+        run.conclusion = run.job.conclusion = 'cancelled';
+        (entity === 'run' ? run : run.job)[field] = field === 'status' ? 'queued' : null;
+      };
+      f.onSleep = () => {
+        if (cancelAt && f.now - cancelAt >= 10000 && f.runs.length === 1) {
+          f.finish(f.runs[0], 'cancelled');
+        }
+      };
+      assert.equal(await f.run(), 0);
+      assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled',
+        'dispatch:101', 'completed:101:success']);
+      assert.ok(f.requests.find(request => request.method === 'POST' &&
+        request.route.endsWith('/dispatches') && request.at > cancelAt).at >= cancelAt + 10000);
+      assert.ok(f.logs.some(message => message.includes('Cancel confirmation: child 100') &&
+        message.includes('next poll in 5s')));
+      assert.ok(f.logs.some(message => message.includes('cancellation confirmed; polling finished')));
+      assert.equal(f.state(), null);
+    });
+  }
+}
+
+test('cancellation metadata gets a final observation at the deadline', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  let cancelAt;
+  f.onDispatch = run => { if (run.id === 101) f.finish(run, 'success'); };
+  f.onCancel = run => {
+    cancelAt = f.now;
+    run.status = run.job.status = 'completed';
+    run.conclusion = 'cancelled';
+    run.job.conclusion = null;
+  };
+  f.onSleep = () => {
+    if (cancelAt && f.runs.length === 1 && f.now - cancelAt >= 120000) {
+      f.finish(f.runs[0], 'cancelled');
+    }
+  };
+  assert.equal(await f.run(), 0);
+  assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled',
+    'dispatch:101', 'completed:101:success']);
+  assert.ok(f.logs.some(message => message.includes('elapsed 120s/120s') &&
+    message.includes('cancellation confirmed; polling finished')));
+  assert.equal(f.state(), null);
+});
+
+test('cancellation metadata expiry fails with states and never dispatches another worker', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  let cancelAt;
+  f.onCancel = run => {
+    cancelAt = f.now;
+    run.status = run.job.status = 'completed';
+    run.conclusion = 'cancelled';
+    run.job.conclusion = null;
+  };
+  assert.equal(await f.run(), 1);
+  assert.equal(f.now - cancelAt, 120000);
+  assert.equal(f.runs.length, 1);
+  assert.equal(f.events.filter(event => event.startsWith('cancel:')).length, 1);
+  assert.match(f.errors.join('\n'), /Cancellation unconfirmed.*run completed\/cancelled.*worker completed\/pending/);
+  assert.ok(f.logs.some(message => message.includes('next poll in 5s')));
+  assert.equal(f.state(), null);
+});
+
+for (const delay of ['retry-after', 'late response']) {
+  test(`cancellation deadline includes ${delay}`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    let cancelAt;
+    let delayedReads = 0;
+    f.onCancel = run => {
+      cancelAt = f.now;
+      run.status = 'completed';
+      run.conclusion = 'cancelled';
+    };
+    f.beforeRequest = request => {
+      if (cancelAt && f.now - cancelAt >= 115000 && request.route.endsWith('/jobs')) {
+        delayedReads++;
+        if (delay === 'retry-after') {
+          return new Response('{}', {status: 429, headers: {'retry-after': '60'}});
+        }
+        f.now += 6000;
+        f.finish(f.runs[0], 'cancelled');
+        return new Response(JSON.stringify({total_count: 1, jobs: [f.runs[0].job]}), {status: 200});
+      }
+    };
+    assert.equal(await f.run(), 1);
+    assert.equal(f.now - cancelAt, delay === 'retry-after' ? 115000 : 121000);
+    assert.equal(delayedReads, 1);
+    assert.equal(f.runs.length, 1);
+    assert.equal(f.events.filter(event => event.startsWith('cancel:')).length, 1);
+    assert.match(f.errors.join('\n'), /Cancellation unconfirmed.*run completed\/cancelled.*worker queued\/pending/);
+    assert.match(f.errors.join('\n'), /GitHub GET .*\/jobs.*request deadline exhausted/);
+    assert.equal(f.state(), null);
+  });
+}
+
+test('execution detected while waiting for cancellation metadata stops fallback', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  let cancelAt;
+  f.onCancel = run => {
+    cancelAt = f.now;
+    run.status = 'completed';
+    run.conclusion = 'cancelled';
+  };
+  f.onSleep = () => {
+    if (cancelAt) {
+      f.acquire(f.runs[0]);
+      f.finish(f.runs[0], 'cancelled');
+    }
+  };
+  assert.equal(await f.run(), 1);
+  assert.equal(f.now - cancelAt, 5000);
+  assert.equal(f.runs.length, 1);
+  assert.match(f.errors.join('\n'), /Queue cancellation raced execution.*runner_id=123/);
+  assert.equal(f.state(), null);
+});
+
+for (const entity of ['run', 'job']) {
+  test(`non-cancellation terminal ${entity} result stops fallback immediately`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    f.onCancel = run => {
+      run.status = run.job.status = 'completed';
+      run.conclusion = run.job.conclusion = 'cancelled';
+      (entity === 'run' ? run : run.job).conclusion = 'failure';
+    };
+    assert.equal(await f.run(), 1);
+    assert.equal(f.runs.length, 1);
+    assert.match(f.errors.join('\n'), /Queue cancellation ended with a non-cancelled result.*failure/);
+    assert.ok(!f.sleeps.includes(5000));
+    assert.equal(f.state(), null);
+  });
+}
+
+test('identity drift during cancellation confirmation fails without renewed grace', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  let cancelAt;
+  f.onCancel = run => {
+    cancelAt = f.now;
+    run.status = 'completed';
+    run.conclusion = 'cancelled';
+  };
+  f.onSleep = () => { if (cancelAt) f.runs[0].head_sha = 'c'.repeat(40); };
+  assert.equal(await f.run(), 1);
+  assert.equal(f.now - cancelAt, 5000);
+  assert.equal(f.runs.length, 1);
+  assert.match(f.errors.join('\n'), /identity mismatch.*head_sha/);
+  assert.equal(f.state(), null);
+});
+
 test('queue exhaustion cancels all three attempts and fails', {timeout: 5000}, async t => {
   const f = fixture(t);
   assert.equal(await f.run(), 1);

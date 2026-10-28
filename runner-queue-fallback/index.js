@@ -192,12 +192,7 @@ async function main() {
             const latest = await snapshot(api, active);
             if (acquired(latest.job) || latest.run.status === 'completed') continue;
             if (latest.job?.status !== 'queued') throw new Error('Child left the runner queue; no fallback');
-            await cancel(api, active.id);
-            const stopped = await snapshot(api, active);
-            if (acquired(stopped.job) || stopped.run.conclusion !== 'cancelled' ||
-                stopped.job?.conclusion !== 'cancelled') {
-              throw new Error('Queue cancellation raced execution or has an ambiguous outcome; no fallback');
-            }
+            await cancel(api, active.id, active);
             report(active, 'queue timeout; cancellation confirmed', queuedAt);
             active = null;
             save(null);

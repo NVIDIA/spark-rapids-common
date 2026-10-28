@@ -214,7 +214,14 @@ trigger are unchanged; rerun the parent, not the dispatched worker.
   are **not retried**. No skipped, missing, cancelled or unsuccessful required job
   can produce a successful coordinator.
 - A queue timeout triggers a fresh state read, cancellation and completion
-  confirmation before another dispatch. If the job acquires a runner during
+  confirmation before another dispatch. Run and job metadata are checked together
+  every five seconds within one two-minute cancellation confirmation window; both
+  must be completed/cancelled with no allocation or execution evidence. Each poll
+  logs both states and runner allocation, tolerating delayed status/conclusion updates
+  without relaxing identity validation. Expiry reports the last observation and stops
+  without another dispatch. Queue-cancellation reads and their retries share that
+  deadline; a response arriving after it cannot authorize fallback.
+  If the job acquires a runner during
   cancellation, stop with an explicit race error rather than run the workload again.
   GitHub has no atomic cancel-only-if-queued operation: that race can interrupt a
   just-started job, but cannot silently cause a fallback retry.
