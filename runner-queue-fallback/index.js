@@ -86,9 +86,10 @@ async function main() {
     const wait = queuedAt ? `; observed queue wait ${Math.round((Date.now() - queuedAt) / 1000)}s` : '';
     const line = `${active.runner.labels}: ${outcome}${wait}; child ${active.id}`;
     console.log(line);
+    console.log(`View worker logs and artifacts here: ${active.url}`);
     if (process.env.GITHUB_STEP_SUMMARY) {
       fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
-        `- ${line} ([run](${active.url}))\n`);
+        `- ${line} ([View worker logs and artifacts here](${active.url}))\n`);
     }
   };
 

@@ -240,6 +240,8 @@ trigger are unchanged; rerun the parent, not the dispatched worker.
   workload needs correspondingly larger parent and child timeouts.
 - Logs and the parent step summary report candidates, observed waits, child links
   and outcomes, including the primary error and confirmed/unconfirmed cleanup.
+  Success, failure and cleanup messages repeat an explicit "View worker logs and
+  artifacts here" link to the child run; worker output is not copied into the parent.
   Outputs `run-id`, `run-url`, `runner` and `attempts` identify the last dispatch.
   All exhausted queues fail the parent check.
 - Poll once per minute while queued or executing: approximately 240 read requests/hour

@@ -189,6 +189,10 @@ test('primary success forwards immutable inputs and reports the selected run', {
   assert.deepEqual(JSON.parse(f.outputs().runner), gpuRunners[0]);
   assert.equal(f.state(), null);
   assert.equal(f.errors.length, 0);
+  const url = 'https://example.invalid/example/consumer/actions/runs/100';
+  assert.equal(f.logs.at(-1), `View worker logs and artifacts here: ${url}`);
+  assert.ok(fs.readFileSync(process.env.GITHUB_STEP_SUMMARY, 'utf8')
+    .includes(`[View worker logs and artifacts here](${url})`));
 });
 
 for (const [kind, runners] of [['GPU', gpuRunners], ['CPU', cpuRunners]]) {
@@ -285,6 +289,10 @@ for (const result of ['failure', 'skipped']) {
     assert.equal(f.runs.length, 1);
     assert.equal(f.events.filter(event => event.startsWith('cancel:')).length, 0);
     assert.match(f.errors.join('\n'), /no workload retry/);
+    assert.equal(f.logs.at(-1),
+      'View worker logs and artifacts here: https://example.invalid/example/consumer/actions/runs/100');
+    assert.match(fs.readFileSync(process.env.GITHUB_STEP_SUMMARY, 'utf8'),
+      /failed: Worker 100:.*\[View worker logs and artifacts here\]\(https:\/\/example\.invalid\/example\/consumer\/actions\/runs\/100\)/);
   });
 }
 
@@ -298,6 +306,8 @@ test('execution timeout cancels the acquired runner without fallback', {timeout:
   assert.equal(f.runs.length, 1);
   assert.equal(f.runs[0].conclusion, 'cancelled');
   assert.match(f.errors.join('\n'), /execution timeout; no fallback/);
+  assert.equal(f.logs.at(-1),
+    'View worker logs and artifacts here: https://example.invalid/example/consumer/actions/runs/100');
 });
 
 test('unconfirmed cancellation preserves cleanup state and never dispatches again', {timeout: 5000}, async t => {
@@ -307,6 +317,8 @@ test('unconfirmed cancellation preserves cleanup state and never dispatches agai
   assert.equal(f.runs.length, 1);
   assert.equal(f.state().id, 100);
   assert.match(f.errors.join('\n'), /Cancellation unconfirmed/);
+  assert.equal(f.logs.at(-1),
+    'View worker logs and artifacts here: https://example.invalid/example/consumer/actions/runs/100');
 });
 
 test('lost dispatch response is recovered by request identity, not retried', {timeout: 5000}, async t => {
