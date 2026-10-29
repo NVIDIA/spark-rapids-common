@@ -424,6 +424,35 @@ class SourceToolsTest(unittest.TestCase):
                              output_root=str(output))
         self.assertEqual(stale.read_text(), 'stale')
 
+    def test_generation_rejects_symlinked_output_boundary(self):
+        self.source('400', 'A.scala', '{"spark":["400"],"carryForward":"none"}')
+        outside = self.root / 'outside'
+        stale = outside / 'main' / 'Stale.scala'
+        stale.parent.mkdir(parents=True)
+        stale.write_text('stale')
+        output = self.root / 'output'
+        output.symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'traverses a symlink'):
+            generate_sources(str(self.module), str(output), self.graph, '400',
+                             output_root=str(output))
+        self.assertEqual(stale.read_text(), 'stale')
+
+    def test_generation_rejects_parent_reference_before_normalizing(self):
+        self.source('400', 'A.scala', '{"spark":["400"],"carryForward":"none"}')
+        output = self.root / 'output'
+        output.mkdir()
+        outside = self.root / 'outside'
+        (outside / 'dir').mkdir(parents=True)
+        stale = outside / 'victim' / 'main' / 'Stale.scala'
+        stale.parent.mkdir(parents=True)
+        stale.write_text('stale')
+        (output / 'link').symlink_to(outside / 'dir', target_is_directory=True)
+        generated = output / 'link' / '..' / 'victim'
+        with self.assertRaisesRegex(ValueError, 'contains a parent reference'):
+            generate_sources(str(self.module), str(generated), self.graph, '400',
+                             output_root=str(output))
+        self.assertEqual(stale.read_text(), 'stale')
+
 
 if __name__ == '__main__':
     unittest.main()

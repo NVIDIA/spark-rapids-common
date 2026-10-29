@@ -31,16 +31,25 @@ def _is_within(root, candidate):
     return candidate == root or candidate.startswith(prefix)
 
 
+def _has_parent_reference(path):
+    path = path.replace(os.altsep, os.sep) if os.altsep else path
+    return os.pardir in path.split(os.sep)
+
+
 def _validate_generated_path(output_root, path):
     """Reject output paths that escape the output root or traverse a symlink."""
+    if _has_parent_reference(output_root) or _has_parent_reference(path):
+        raise ValueError('Generated source path contains a parent reference: %s' % path)
     root = os.path.abspath(output_root)
     candidate = os.path.abspath(path)
     if not _is_within(root, candidate):
         raise ValueError('Generated source path is outside the output root: %s' % path)
     current = candidate
-    while current != root:
+    while True:
         if os.path.islink(current):
             raise ValueError('Generated source path traverses a symlink: %s' % current)
+        if current == root:
+            break
         current = os.path.dirname(current)
 
 
