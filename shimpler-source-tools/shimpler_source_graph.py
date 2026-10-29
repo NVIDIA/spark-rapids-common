@@ -14,7 +14,7 @@
 
 """Read and validate source-parent relationships from Maven build target profiles.
 
-This module is shared with Shimplify's Jython 2.7 build task. A source parent
+This module is shared with the Jython 2.7 shim-source build task. A source parent
 changes source selection only where an annotated source uses an introduction
 selector; it does not change dependencies or the generated Spark identity.
 """

@@ -14,7 +14,7 @@
 
 """Parse Spark source selectors and check proposed inheritance against exact membership.
 
-This module is compatible with Shimplify's Jython 2.7 runtime. Source changes
+This module is compatible with the shim-source build task's Jython 2.7 runtime. Source changes
 should compare inherited and legacy selections before converting annotations.
 """
 

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Materialize resolved shim sources for Shimplify's Jython 2.7 task."""
+"""Materialize resolved shim sources for the Jython 2.7 build task."""
 
 import os
 import re
@@ -28,7 +28,7 @@ PACKAGE_CLASSIFIER = re.compile(
 
 def generate_sources(module_root, generated_root, graph, target, valid_targets=None,
                      allowed_external_targets=()):
-    """Replace Shimplify-owned main/test outputs with the target's selected sources.
+    """Replace generated main/test outputs with the target's selected sources.
 
     Selection and validation finish before old outputs are removed. The caller's
     cache marker is written only after this function succeeds, so an interrupted
