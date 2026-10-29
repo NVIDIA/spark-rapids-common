@@ -31,7 +31,7 @@ except NameError:
     string_types = (str,)
 
 
-SourceSelector = namedtuple('SourceSelector', 'kind targets other_components')
+SourceSelector = namedtuple('SourceSelector', 'kind targets')
 
 
 def spark_minor(target):
@@ -42,12 +42,12 @@ def spark_minor(target):
     return match.group(1), match.group(2)
 
 
-def parse_selector_line(line, graph, allow_unmapped_exact=False):
-    """Parse one shim JSON line, retaining any non-Spark component selectors.
+def parse_selector_line(line, graph, allowed_external_targets=()):
+    """Parse one shim JSON line, allowing only listed external exact targets.
 
     Public POMs do not define private/vendor targets already present in exact
-    annotations. A repository-wide public query may preserve those legacy
-    strings, but new inheritance selectors must name a known graph target.
+    annotations. A consumer may explicitly allow those legacy strings, but
+    inheritance selectors must name a known graph target.
     """
     entry = json.loads(line)
     if not isinstance(entry, dict) or 'spark' not in entry:
@@ -60,6 +60,9 @@ def parse_selector_line(line, graph, allow_unmapped_exact=False):
                          'carryForward value none, sameMinor, or all')
     if 'includeDescendantShims' in entry:
         raise ValueError('Use carryForward instead of includeDescendantShims')
+    unknown_keys = set(entry) - {'spark', 'carryForward'}
+    if unknown_keys:
+        raise ValueError('Unknown shim selector fields: %s' % ', '.join(sorted(unknown_keys)))
     kind = {'none': 'exact', 'sameMinor': 'minor',
             'all': 'descendants'}[carry_forward]
     targets = tuple(spark)
@@ -69,12 +72,11 @@ def parse_selector_line(line, graph, allow_unmapped_exact=False):
     if len(set(targets)) != len(targets):
         raise ValueError('Duplicate Spark selector target')
     for target in targets:
-        if target not in graph and not (kind == 'exact' and allow_unmapped_exact):
+        if target not in graph and not (kind == 'exact' and
+                                        target in allowed_external_targets):
             raise ValueError('Unknown Spark selector target %s' % target)
 
-    other_components = dict((key, value) for key, value in entry.items()
-                            if key not in ('spark', 'carryForward'))
-    return SourceSelector(kind, targets, other_components)
+    return SourceSelector(kind, targets)
 
 
 def derive_introductions(graph, exact_targets):

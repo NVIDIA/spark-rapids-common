@@ -25,7 +25,8 @@ SPARK_CLASSIFIER = '$_spark.version.classifier_'
 PACKAGE_CLASSIFIER = re.compile('package .*(' + re.escape(SPARK_CLASSIFIER) + ')')
 
 
-def generate_sources(module_root, generated_root, graph, target, valid_targets=None):
+def generate_sources(module_root, generated_root, graph, target, valid_targets=None,
+                     allowed_external_targets=()):
     """Replace Shimplify-owned main/test outputs with the target's selected sources.
 
     Selection and validation finish before old outputs are removed. The caller's
@@ -35,7 +36,8 @@ def generate_sources(module_root, generated_root, graph, target, valid_targets=N
     # Other Scala POMs may define selectors that are inert in this build. Parse
     # against the repository-wide target set, but resolve using only this graph.
     variants, unannotated = scan_module_sources(
-        module_root, graph if valid_targets is None else valid_targets)
+        module_root, graph if valid_targets is None else valid_targets,
+        allowed_external_targets)
     if unannotated:
         raise ValueError('No shim selector block in %s' % unannotated[0])
     selected = resolve_sources(graph, variants, target)

@@ -33,9 +33,14 @@ SHIM_COMMENT = re.compile(r'/\*\*\* spark-rapids-shim-json-lines\s*\n(.*?)\n'
 SourceVariant = namedtuple('SourceVariant', 'logical_path physical_path selectors')
 SourceSelection = namedtuple('SourceSelection',
                              'logical_path physical_path introduced_at selector_kind ancestry_path')
+VERSIONED_PATH = re.compile(r'^spark[0-9]{3}(?:[a-z][a-z0-9]*)?$')
 
 
-def scan_module_sources(module_root, valid_targets):
+def _has_versioned_path(logical_path):
+    return any(VERSIONED_PATH.match(part) for part in logical_path.split('/'))
+
+
+def scan_module_sources(module_root, valid_targets, allowed_external_targets=()):
     """Return annotated Scala/Java shim variants and unannotated files in shim roots."""
     variants = []
     unannotated = []
@@ -68,17 +73,21 @@ def scan_module_sources(module_root, valid_targets):
                         lines = [line.strip() for line in match.group(1).splitlines() if line.strip()]
                         if not lines:
                             raise ValueError('Empty shim selector block in %s' % physical)
+                        relative = os.path.relpath(physical, language_root)
+                        logical = os.path.join('src', scope, language, relative).replace(os.sep, '/')
                         try:
                             selectors = tuple(parse_selector_line(line, valid_targets,
-                                                                 allow_unmapped_exact=True)
+                                                                 allowed_external_targets)
                                               for line in lines)
                         except ValueError as error:
                             raise ValueError('%s: %s' % (physical, error))
+                        if _has_versioned_path(logical) and any(
+                                selector.kind != 'exact' for selector in selectors):
+                            raise ValueError('%s: versioned source paths require '
+                                             'carryForward none' % physical)
                         anchors = [min(selector.targets) for selector in selectors]
                         if anchors != sorted(set(anchors)):
                             raise ValueError('%s: shim selectors must be unique and sorted' % physical)
-                        relative = os.path.relpath(physical, language_root)
-                        logical = os.path.join('src', scope, language, relative).replace(os.sep, '/')
                         variants.append(SourceVariant(logical, physical, selectors))
     return variants, unannotated
 
@@ -172,13 +181,12 @@ def candidate_inherited_sources(graph, variants):
             continue
         selectors = []
         introductions = derive_introductions(graph, exact)
-        target_specific = any(re.match(r'spark[^/]+$', part) for part in
-                              variant.logical_path.split('/'))
+        target_specific = _has_versioned_path(variant.logical_path)
         if not target_specific and inherited_membership(graph, introductions) == exact:
-            selectors.append(SourceSelector('descendants', introductions, {}))
+            selectors.append(SourceSelector('descendants', introductions))
         else:
             non_inheritable.append(variant.physical_path)
-            selectors.append(SourceSelector('exact', tuple(sorted(exact)), {}))
+            selectors.append(SourceSelector('exact', tuple(sorted(exact))))
         candidates.append(variant._replace(selectors=tuple(selectors)))
     return candidates, tuple(sorted(non_inheritable))
 

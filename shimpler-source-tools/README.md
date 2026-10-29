@@ -19,7 +19,10 @@ descendants in the same Spark major/minor release line; for example, 404 reaches
 All scopes follow the explicit `shim.source.inherits` graph, and a nearer
 source variant takes precedence. The major/minor line comes from the first two
 digits of the three-digit Spark buildver. Scalar and object-form Spark selectors
-and the old `includeDescendantShims` field are not supported.
+and the old `includeDescendantShims` field are not supported. Only `spark` and
+`carryForward` are accepted; unknown fields are errors. Sources whose package
+path contains a versioned `sparkNNN` component must use `carryForward:"none"`
+so a later shim cannot select both versions' providers.
 
 A patch release normally adds a graph edge to the preceding patch and an exact
 version-identity source; `sameMinor` sources then arrive without annotation
@@ -32,6 +35,11 @@ The consumer repository owns its Maven/Ant entry point, build-version discovery,
 and release-profile policy. It should pin a reviewed version of these files and
 make them available on the build script's Python path. Builds must not fetch
 `main` or download these files during `generate-sources`.
+
+If a consumer has exact tags for targets not declared in its Maven graphs, it
+must pass those known names as `allowed_external_targets` when scanning or
+generating sources. Unlisted names are errors, and external names cannot be
+inheritance roots.
 
 For now, consumers can vendor these four files unchanged. Before updating a pin,
 compare each vendored file byte-for-byte with this directory, run the consumer's

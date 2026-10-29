@@ -94,10 +94,9 @@ class SourceToolsTest(unittest.TestCase):
     def test_selector_requires_carry_forward_and_known_unique_roots(self):
         graph = {'330': None, '350': None}
         valid = parse_selector_line(
-            '{"spark":["330","350"],"carryForward":"all","delta":"test"}', graph)
+            '{"spark":["330","350"],"carryForward":"all"}', graph)
         self.assertEqual(valid.kind, 'descendants')
         self.assertEqual(valid.targets, ('330', '350'))
-        self.assertEqual(valid.other_components, {'delta': 'test'})
         for invalid, message in (
                 ('{"spark":[],"carryForward":"all"}', 'nonempty'),
                 ('{"spark":["330","330"],"carryForward":"all"}', 'Duplicate'),
@@ -109,11 +108,39 @@ class SourceToolsTest(unittest.TestCase):
                  'carryForward value'),
                 ('{"spark":["330"],"carryForward":"none",'
                  '"includeDescendantShims":false}', 'Use carryForward'),
+                ('{"spark":["330"],"carryForward":"all","delta":"40x"}',
+                 'Unknown shim selector fields: delta'),
                 ('{"spark":"330"}', 'target list'),
                 ('{"spark":{"introduced":"330"}}', 'target list'),
                 ('{"spark":{"only":"330"}}', 'target list')):
             with self.subTest(selector=invalid), self.assertRaisesRegex(ValueError, message):
                 parse_selector_line(invalid, graph)
+
+    def test_external_exact_targets_must_be_explicitly_allowed(self):
+        selector = '{"spark":["330db"],"carryForward":"none"}'
+        with self.assertRaisesRegex(ValueError, 'Unknown Spark selector target 330db'):
+            parse_selector_line(selector, self.graph)
+        self.assertEqual(parse_selector_line(selector, self.graph, {'330db'}).targets,
+                         ('330db',))
+        with self.assertRaisesRegex(ValueError, 'Unknown Spark selector target 4O4'):
+            parse_selector_line('{"spark":["4O4"],"carryForward":"none"}',
+                                self.graph, {'330db'})
+        with self.assertRaisesRegex(ValueError, 'Unknown Spark selector target 330db'):
+            parse_selector_line('{"spark":["330db"],"carryForward":"all"}',
+                                self.graph, {'330db'})
+
+    def test_scan_requires_external_exact_target_allowlist(self):
+        self.source('400', 'External.scala',
+                    '{"spark":["330db"],"carryForward":"none"}')
+        with self.assertRaisesRegex(ValueError, 'Unknown Spark selector target 330db'):
+            scan_module_sources(str(self.module), self.graph)
+        variants, skipped = scan_module_sources(str(self.module), self.graph, {'330db'})
+        self.assertFalse(skipped)
+        self.assertEqual(len(variants), 1)
+        self.assertFalse(resolve_sources(self.graph, variants, '400'))
+        self.assertFalse(generate_sources(str(self.module), str(self.root / 'generated'),
+                                          self.graph, '400',
+                                          allowed_external_targets={'330db'}))
 
     def test_generation_uses_inherited_source(self):
         graph = {'330': None, '331': '330', '400': None, '401': '400'}
@@ -169,6 +196,15 @@ class SourceToolsTest(unittest.TestCase):
         self.assertEqual(non_inheritable, (str(source),))
         self.assertEqual(candidates[0].selectors[0].kind, 'exact')
         self.assertEqual(validate_legacy_shadow(self.graph, variants), (str(source),))
+
+    def test_target_specific_logical_path_rejects_authored_inheritance(self):
+        for carry_forward in ('sameMinor', 'all'):
+            with self.subTest(carry_forward=carry_forward):
+                self.source('400', 'spark400/SparkShimServiceProvider.scala',
+                            '{"spark":["400"],"carryForward":"' + carry_forward + '"}')
+                with self.assertRaisesRegex(ValueError, 'versioned source paths require '
+                                            'carryForward none'):
+                    scan_module_sources(str(self.module), self.graph)
 
     def test_generation_ignores_known_inactive_introduction(self):
         self.source('330', 'Old.scala',
