@@ -43,12 +43,40 @@ class SourceToolsTest(unittest.TestCase):
           </profiles></project>''')
         self.graph = load_source_graph(str(pom))
 
-    def source(self, owner, name, selector):
-        path = self.module / 'src' / 'main' / ('spark' + owner) / 'scala' / 'pkg' / name
+    def source(self, owner, name, selector, language='scala'):
+        path = self.module / 'src' / 'main' / ('spark' + owner) / language / 'pkg' / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('/*** spark-rapids-shim-json-lines\n' + selector +
                         '\nspark-rapids-shim-json-lines ***/\npackage pkg\nclass Example\n')
         return path
+
+    def test_scans_scala_binary_version_directories(self):
+        scala_212 = self.source('400', 'Only212.scala',
+                                '{"spark":["400"],"carryForward":"none"}',
+                                'scala-2.12')
+        scala_213 = self.source('400', 'Only213.scala',
+                                '{"spark":["400"],"carryForward":"none"}',
+                                'scala-2.13')
+        variants, skipped = scan_module_sources(str(self.module), self.graph)
+        self.assertFalse(skipped)
+        selected = resolve_sources(self.graph, variants, '400')
+        self.assertEqual(selected['src/main/scala-2.12/pkg/Only212.scala'].physical_path,
+                         str(scala_212))
+        self.assertEqual(selected['src/main/scala-2.13/pkg/Only213.scala'].physical_path,
+                         str(scala_213))
+
+    def test_rejects_unexpected_source_directory(self):
+        unexpected = self.module / 'src' / 'main' / 'spark400' / 'resources'
+        unexpected.mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError, 'Unexpected source directory'):
+            scan_module_sources(str(self.module), self.graph)
+
+    def test_ignores_non_versioned_spark_directory(self):
+        shared = self.module / 'src' / 'main' / 'spark-shared' / 'scala'
+        shared.mkdir(parents=True)
+        variants, skipped = scan_module_sources(str(self.module), self.graph)
+        self.assertFalse(variants)
+        self.assertFalse(skipped)
 
     def test_inherited_source_and_exact_override(self):
         base = self.source('400', 'A.scala',
@@ -129,6 +157,15 @@ class SourceToolsTest(unittest.TestCase):
             parse_selector_line('{"spark":["330db"],"carryForward":"all"}',
                                 self.graph, {'330db'})
 
+    def test_shadow_preserves_allowlisted_external_targets(self):
+        source = self.source('400', 'External.scala',
+                             '{"spark":["330db","400"],"carryForward":"none"}')
+        variants, _ = scan_module_sources(str(self.module), self.graph, {'330db'})
+        candidates, non_inheritable = candidate_inherited_sources(self.graph, variants)
+        self.assertEqual(non_inheritable, (str(source),))
+        self.assertEqual(candidates[0].selectors[0].kind, 'exact')
+        self.assertEqual(candidates[0].selectors[0].targets, ('330db', '400'))
+
     def test_scan_requires_external_exact_target_allowlist(self):
         self.source('400', 'External.scala',
                     '{"spark":["330db"],"carryForward":"none"}')
@@ -166,6 +203,27 @@ class SourceToolsTest(unittest.TestCase):
         self.assertTrue(link.is_symlink())
         self.assertEqual(link.resolve(), base)
         self.assertIn('class Example', link.read_text())
+
+    def test_package_classifier_is_only_replaced_in_package_declaration(self):
+        source = self.source('400', 'Comment.scala',
+                             '{"spark":["400"],"carryForward":"none"}')
+        source.write_text(source.read_text().replace(
+            'package pkg',
+            '// package com.nvidia.$_spark.version.classifier_.comment\npackage pkg'))
+        generated = self.root / 'generated'
+        generate_sources(str(self.module), str(generated), self.graph, '400')
+        output = generated / 'main' / 'scala' / 'pkg' / 'Comment.scala'
+        self.assertTrue(output.is_symlink())
+        self.assertIn('$_spark.version.classifier_', output.read_text())
+
+    def test_generation_rejects_symlinked_output_root(self):
+        self.source('400', 'A.scala', '{"spark":["400"],"carryForward":"none"}')
+        real_output = self.root / 'real-output'
+        real_output.mkdir()
+        generated = self.root / 'generated'
+        generated.symlink_to(real_output, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'Generated source root is a symlink'):
+            generate_sources(str(self.module), str(generated), self.graph, '400')
 
     def test_closed_exact_membership_can_be_inherited(self):
         self.source('400', 'Closed.scala',
@@ -294,6 +352,15 @@ class SourceToolsTest(unittest.TestCase):
             validate_source_graph({'401': '400'})
         with self.assertRaisesRegex(ValueError, 'Source inheritance cycle'):
             validate_source_graph({'400': '401', '401': '400'})
+
+    def test_release_profile_buildver_must_match_profile_identity(self):
+        pom = self.root / 'mismatch.xml'
+        pom.write_text('''<project xmlns="http://maven.apache.org/POM/4.0.0">
+          <profiles><profile><id>release401</id><properties>
+            <buildver>400</buildver>
+          </properties></profile></profiles></project>''')
+        with self.assertRaisesRegex(ValueError, 'activates buildver 401 but declares 400'):
+            load_source_graph(str(pom))
 
     def test_ambiguity_preserves_previous_generated_sources(self):
         self.source('400', 'A.scala', '{"spark":["401"],"carryForward":"none"}')

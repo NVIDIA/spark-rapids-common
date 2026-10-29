@@ -47,7 +47,7 @@ def load_source_graph(pom_path):
         if target in graph:
             raise ValueError('Duplicate build target %s in %s' % (target, pom_path))
         properties = profile.find(POM_NAMESPACE + 'properties')
-        if properties is not None and not (profile_id and profile_id.startswith('release')):
+        if properties is not None:
             declared_buildver = properties.findtext(POM_NAMESPACE + 'buildver')
             if declared_buildver is not None and declared_buildver.strip() != target:
                 raise ValueError('Profile %s activates buildver %s but declares %s' %

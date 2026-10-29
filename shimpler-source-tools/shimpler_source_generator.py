@@ -22,7 +22,8 @@ from shimpler_source_resolver import resolve_sources, scan_module_sources
 
 
 SPARK_CLASSIFIER = '$_spark.version.classifier_'
-PACKAGE_CLASSIFIER = re.compile('package .*(' + re.escape(SPARK_CLASSIFIER) + ')')
+PACKAGE_CLASSIFIER = re.compile(
+    r'^[ \t]*package[ \t]+[^\r\n]*(' + re.escape(SPARK_CLASSIFIER) + r')', re.MULTILINE)
 
 
 def generate_sources(module_root, generated_root, graph, target, valid_targets=None,
@@ -42,6 +43,8 @@ def generate_sources(module_root, generated_root, graph, target, valid_targets=N
         raise ValueError('No shim selector block in %s' % unannotated[0])
     selected = resolve_sources(graph, variants, target)
 
+    if os.path.islink(generated_root):
+        raise ValueError('Generated source root is a symlink: %s' % generated_root)
     for scope in ('main', 'test'):
         scope_root = os.path.join(generated_root, scope)
         if os.path.islink(scope_root):

@@ -34,6 +34,7 @@ SourceVariant = namedtuple('SourceVariant', 'logical_path physical_path selector
 SourceSelection = namedtuple('SourceSelection',
                              'logical_path physical_path introduced_at selector_kind ancestry_path')
 VERSIONED_PATH = re.compile(r'^spark[0-9]{3}(?:[a-z][a-z0-9]*)?$')
+SOURCE_LANGUAGE_PATH = re.compile(r'^(?:java|scala(?:-[0-9]+\.[0-9]+)?)$')
 
 
 def _has_versioned_path(logical_path):
@@ -50,9 +51,17 @@ def scan_module_sources(module_root, valid_targets, allowed_external_targets=())
             continue
         for owner in sorted(os.listdir(scope_root)):
             owner_root = os.path.join(scope_root, owner)
-            if not owner.startswith('spark') or not os.path.isdir(owner_root):
+            if not VERSIONED_PATH.match(owner) or not os.path.isdir(owner_root):
                 continue
-            for language in ('java', 'scala'):
+            languages = []
+            for child in sorted(os.listdir(owner_root)):
+                child_root = os.path.join(owner_root, child)
+                if not os.path.isdir(child_root):
+                    continue
+                if not SOURCE_LANGUAGE_PATH.match(child):
+                    raise ValueError('Unexpected source directory %s' % child_root)
+                languages.append(child)
+            for language in languages:
                 language_root = os.path.join(owner_root, language)
                 if not os.path.isdir(language_root):
                     continue
@@ -104,7 +113,8 @@ def discover_shim_modules(repository_root):
                 scope_root = os.path.join(src_root, scope)
                 if not os.path.isdir(scope_root):
                     continue
-                if any(child.startswith('spark') and os.path.isdir(os.path.join(scope_root, child))
+                if any(VERSIONED_PATH.match(child) and
+                       os.path.isdir(os.path.join(scope_root, child))
                        for child in os.listdir(scope_root)):
                     modules.append(directory)
                     subdirs.remove('src')
@@ -175,8 +185,15 @@ def candidate_inherited_sources(graph, variants):
         if any(selector.kind != 'exact' for selector in variant.selectors):
             raise ValueError('A captured pre-conversion oracle is required for %s' %
                              variant.logical_path)
-        exact = set(target for selector in variant.selectors if selector.kind == 'exact'
-                    for target in selector.targets if target in graph)
+        all_exact = set(target for selector in variant.selectors if selector.kind == 'exact'
+                        for target in selector.targets)
+        exact = all_exact.intersection(graph)
+        external = all_exact.difference(graph)
+        if external:
+            non_inheritable.append(variant.physical_path)
+            candidates.append(variant._replace(
+                selectors=(SourceSelector('exact', tuple(sorted(all_exact))),)))
+            continue
         if not exact:
             continue
         selectors = []
