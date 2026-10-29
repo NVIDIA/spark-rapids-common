@@ -222,7 +222,7 @@ class SourceToolsTest(unittest.TestCase):
         real_output.mkdir()
         generated = self.root / 'generated'
         generated.symlink_to(real_output, target_is_directory=True)
-        with self.assertRaisesRegex(ValueError, 'Generated source root is a symlink'):
+        with self.assertRaisesRegex(ValueError, 'traverses a symlink'):
             generate_sources(str(self.module), str(generated), self.graph, '400')
 
     def test_closed_exact_membership_can_be_inherited(self):
@@ -362,6 +362,19 @@ class SourceToolsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'activates buildver 401 but declares 400'):
             load_source_graph(str(pom))
 
+    def test_release_profile_activation_must_match_profile_identity(self):
+        for activation in ('<name>buildver</name><value>400</value>',
+                           '<name>other</name><value>401</value>'):
+            with self.subTest(activation=activation):
+                pom = self.root / 'activation-mismatch.xml'
+                pom.write_text('''<project xmlns="http://maven.apache.org/POM/4.0.0">
+                  <profiles><profile><id>release401</id><activation><property>%s</property>
+                  </activation><properties><buildver>401</buildver></properties>
+                  </profile></profiles></project>''' % activation)
+                with self.assertRaisesRegex(ValueError,
+                                            'Profile release401 must activate buildver 401'):
+                    load_source_graph(str(pom))
+
     def test_ambiguity_preserves_previous_generated_sources(self):
         self.source('400', 'A.scala', '{"spark":["401"],"carryForward":"none"}')
         self.source('401', 'A.scala', '{"spark":["401"],"carryForward":"none"}')
@@ -381,6 +394,35 @@ class SourceToolsTest(unittest.TestCase):
         stale.write_text('stale')
         generate_sources(str(self.module), str(generated), self.graph, '400')
         self.assertFalse(stale.exists())
+
+    def test_generation_validates_both_scopes_before_removal(self):
+        self.source('400', 'A.scala', '{"spark":["400"],"carryForward":"none"}')
+        generated = self.root / 'generated'
+        previous = generated / 'main' / 'scala' / 'pkg' / 'Previous.scala'
+        previous.parent.mkdir(parents=True)
+        previous.write_text('previous')
+        outside = self.root / 'outside'
+        outside.mkdir()
+        (generated / 'test').symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'traverses a symlink'):
+            generate_sources(str(self.module), str(generated), self.graph, '400',
+                             output_root=str(self.root))
+        self.assertEqual(previous.read_text(), 'previous')
+
+    def test_generation_rejects_intermediate_output_symlink(self):
+        self.source('400', 'A.scala', '{"spark":["400"],"carryForward":"none"}')
+        outside = self.root / 'outside'
+        stale = outside / 'src' / 'main' / 'Stale.scala'
+        stale.parent.mkdir(parents=True)
+        stale.write_text('stale')
+        output = self.root / 'output'
+        output.mkdir()
+        (output / 'generated').symlink_to(outside, target_is_directory=True)
+        generated = output / 'generated' / 'src'
+        with self.assertRaisesRegex(ValueError, 'traverses a symlink'):
+            generate_sources(str(self.module), str(generated), self.graph, '400',
+                             output_root=str(output))
+        self.assertEqual(stale.read_text(), 'stale')
 
 
 if __name__ == '__main__':

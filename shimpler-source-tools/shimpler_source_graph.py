@@ -35,10 +35,16 @@ def load_source_graph(pom_path):
 
     for profile in profiles.findall(POM_NAMESPACE + 'profile'):
         profile_id = profile.findtext(POM_NAMESPACE + 'id')
+        activation = profile.find(POM_NAMESPACE + 'activation/' + POM_NAMESPACE + 'property')
         if profile_id and profile_id.startswith('release'):
             target = profile_id[len('release'):]
+            if activation is not None:
+                activation_name = (activation.findtext(POM_NAMESPACE + 'name') or '').strip()
+                activation_value = (activation.findtext(POM_NAMESPACE + 'value') or '').strip()
+                if activation_name != 'buildver' or activation_value != target:
+                    raise ValueError('Profile %s must activate buildver %s, not %s=%s' %
+                                     (profile_id, target, activation_name, activation_value))
         else:
-            activation = profile.find(POM_NAMESPACE + 'activation/' + POM_NAMESPACE + 'property')
             if activation is None or activation.findtext(POM_NAMESPACE + 'name') != 'buildver':
                 continue
             target = (activation.findtext(POM_NAMESPACE + 'value') or '').strip()

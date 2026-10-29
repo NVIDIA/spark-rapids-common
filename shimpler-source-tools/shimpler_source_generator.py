@@ -26,8 +26,38 @@ PACKAGE_CLASSIFIER = re.compile(
     r'^[ \t]*package[ \t]+[^\r\n]*(' + re.escape(SPARK_CLASSIFIER) + r')', re.MULTILINE)
 
 
+def _is_within(root, candidate):
+    prefix = root if root.endswith(os.sep) else root + os.sep
+    return candidate == root or candidate.startswith(prefix)
+
+
+def _validate_generated_path(output_root, path):
+    """Reject output paths that escape the output root or traverse a symlink."""
+    root = os.path.abspath(output_root)
+    candidate = os.path.abspath(path)
+    if not _is_within(root, candidate):
+        raise ValueError('Generated source path is outside the output root: %s' % path)
+    current = candidate
+    while current != root:
+        if os.path.islink(current):
+            raise ValueError('Generated source path traverses a symlink: %s' % current)
+        current = os.path.dirname(current)
+
+
+def _common_output_root(module_root, generated_root):
+    """Return the nearest lexical ancestor shared by source and output roots."""
+    root = os.path.abspath(module_root)
+    generated = os.path.abspath(generated_root)
+    while not _is_within(root, generated):
+        parent = os.path.dirname(root)
+        if parent == root:
+            return root
+        root = parent
+    return root
+
+
 def generate_sources(module_root, generated_root, graph, target, valid_targets=None,
-                     allowed_external_targets=()):
+                     allowed_external_targets=(), output_root=None):
     """Replace generated main/test outputs with the target's selected sources.
 
     Selection and validation finish before old outputs are removed. The caller's
@@ -43,12 +73,12 @@ def generate_sources(module_root, generated_root, graph, target, valid_targets=N
         raise ValueError('No shim selector block in %s' % unannotated[0])
     selected = resolve_sources(graph, variants, target)
 
-    if os.path.islink(generated_root):
-        raise ValueError('Generated source root is a symlink: %s' % generated_root)
-    for scope in ('main', 'test'):
-        scope_root = os.path.join(generated_root, scope)
-        if os.path.islink(scope_root):
-            raise ValueError('Generated source directory is a symlink: %s' % scope_root)
+    if output_root is None:
+        output_root = _common_output_root(module_root, generated_root)
+    scope_roots = [os.path.join(generated_root, scope) for scope in ('main', 'test')]
+    for path in [generated_root] + scope_roots:
+        _validate_generated_path(output_root, path)
+    for scope_root in scope_roots:
         if os.path.isdir(scope_root):
             shutil.rmtree(scope_root)
 
