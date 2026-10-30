@@ -1,4 +1,4 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.
+# Copyright (c) 2024-2026, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM python:3.8-slim-buster
+FROM python:3.12-slim-bookworm
+
+LABEL org.opencontainers.image.source="https://github.com/NVIDIA/spark-rapids-common"
 
 WORKDIR /
 COPY signoff-check .
-RUN pip install PyGithub && chmod +x /signoff-check
+RUN pip install --no-cache-dir PyGithub==2.10.0 && chmod +x /signoff-check
 
 # require envs: OWNER,REPO_NAME,GITHUB_TOKEN,PULL_NUMBER
 ENTRYPOINT ["/signoff-check"]
