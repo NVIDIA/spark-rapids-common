@@ -17,6 +17,9 @@ name: Shimpler source tools
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+    paths:
+      - 'shimpler-source-tools/**'
+      - '.github/workflows/shimpler-source-tools.yml'
 
 jobs:
   test:
