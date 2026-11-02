@@ -32,6 +32,9 @@ Keep the path catalog in the consumer repository, for example `.github/ci-suites
 ```
 
 `paths` defines the suite's scope; `exclude_paths` removes files **within that scope**.
+For example, `"exclude_paths": ["**/*.md"]` filters only Markdown files matched by
+that suite's `paths`. It does not affect files outside that scope or other suites;
+it is not a repository-wide exclusion.
 Both use repository-relative paths, not paths relative to each included directory.
 In this example, `src/code.cpp` selects the suite, while `src/generated/code.cpp`,
 `src/README.md`, and `other/code.cpp` do not. A code change plus excluded docs still runs tests.

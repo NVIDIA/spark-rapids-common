@@ -20,6 +20,7 @@ description: Select required jobs from the PR diff for a push to pull-request/<n
 # The caller owns the catalog: shared_paths affect every enabled suite,
 # suites.<name>.paths define its scope (["**"] or omit for all files); jobs lists required jobs.
 # exclude_paths filters within that scope, but cannot override shared_paths.
+# It does not affect files outside the suite's paths or the rules of other suites.
 # Both path lists are repository-relative, not relative to each included directory.
 # Suites default to enabled. To pause one, set enabled: false and explain why in comment.
 # Disabled suites are never selected; the selector remains required by the final gate.
