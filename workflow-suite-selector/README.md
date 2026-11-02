@@ -1,8 +1,16 @@
 # Workflow suite selector
 
 Select test suites from the full PR diff and output the jobs that must pass.
-Use this in a workflow triggered by an approved `push` to `pull-request/<number>`.
-The caller owns approval; this action verifies the open PR's current head and target.
+
+**Supported workflow:** a `push` event on `pull-request/<number>` in the PR's base
+repository. The pushed commit must equal that open PR's current head, and the PR
+must target the supplied `base-branch`. Other events, including `pull_request`,
+`pull_request_target`, `workflow_dispatch`, and `merge_group`, are not supported.
+
+This action does not check PR review approvals, `/ok to test` comments, or who
+pushed the branch. The caller must enforce CI execution authorization beforehand;
+for example, copy-pr-bot can push the PR head after a maintainer approves
+`/ok to test <full-head-SHA>`. That is permission to run CI, not review approval.
 
 ## Usage
 
@@ -20,9 +28,14 @@ Keep the path catalog in the consumer repository, for example `.github/ci-suites
 Paths are exact filenames or directory prefixes ending in `/`, not globs.
 Changes to `shared_paths` select every suite. Renames check both old and new paths.
 
-Add this job to the approved-push workflow:
+Configure the supported trigger and selector job:
 
 ```yaml
+on:
+  push:
+    branches:
+      - 'pull-request/[0-9]+'
+
 permissions:
   contents: read
   pull-requests: read

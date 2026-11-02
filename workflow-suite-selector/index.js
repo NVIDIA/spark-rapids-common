@@ -44,7 +44,7 @@ function selectSuites(files, config) {
 function pullNumber(context) {
   const match = context.eventName === 'push' &&
     /^refs\/heads\/pull-request\/([1-9][0-9]*)$/.exec(context.ref || '');
-  if (!match) throw new Error('Suite selection requires an approved pull-request/<number> push');
+  if (!match) throw new Error('Suite selection requires a push to refs/heads/pull-request/<number>');
   return Number(match[1]);
 }
 
@@ -52,7 +52,7 @@ async function assertCurrent(github, repo, pr) {
   const {data: current} = await github.rest.pulls.get({...repo, pull_number: pr.number});
   if (current.state !== 'open' || current.head.sha !== pr.head.sha ||
       current.base.sha !== pr.base.sha || current.base.ref !== pr.base.ref) {
-    throw new Error('PR changed during suite selection; approve and run the current PR head');
+    throw new Error('PR changed during suite selection; rerun for the current PR head');
   }
 }
 
@@ -66,7 +66,7 @@ async function select({github, context, core, catalog, baseBranch, selectorJob})
   // Check runs share a head SHA; another target branch must not waive this branch's tests.
   if (pr.base.ref !== baseBranch) throw new Error(`Suite selection only supports PRs targeting ${baseBranch}`);
   if (pr.state !== 'open' || context.sha !== pr.head.sha) {
-    throw new Error('Approved source is no longer the head of an open PR');
+    throw new Error('Push commit does not match the head of an open PR');
   }
   const files = await github.paginate(github.rest.pulls.listFiles, {
     ...context.repo, pull_number: pr.number, per_page: 100,

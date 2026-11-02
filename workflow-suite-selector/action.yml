@@ -13,9 +13,11 @@
 # limitations under the License.
 
 name: Workflow suite selector
-description: Select required jobs from the full PR diff for an approved copied-branch push
-# Checkout the approved source first; grant contents: read and pull-requests: read.
-# The caller owns approval and the catalog: shared_paths affect every suite,
+description: Select required jobs from the PR diff for a push to pull-request/<number>
+# Only supports push events on pull-request/<number> at the open PR's current head.
+# The caller authorizes CI execution; this action does not check review/comment approval.
+# Checkout github.sha first; grant contents: read and pull-requests: read.
+# The caller owns the catalog: shared_paths affect every suite,
 # suites.<name>.paths select that suite, and suites.<name>.jobs lists required jobs.
 # Paths are exact files or directory prefixes ending in /, not glob patterns.
 # Pass required-jobs to workflow-result-gate; include this selector in gate.needs.
