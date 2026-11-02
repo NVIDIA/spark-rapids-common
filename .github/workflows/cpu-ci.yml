@@ -1,0 +1,131 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CPU CI
+
+# Always start for PRs targeting main; path filtering belongs in the selector.
+# Only CPU CI gate should be required, not the conditional suite jobs.
+# The existing tests run for all authors, including bots, with read-only permissions.
+# No copy-pr approval, self-hosted runner allocation, or image publication is needed.
+on:
+  pull_request:
+    branches: [main]
+    # edited includes retargeting a PR to main.
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cpu-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  select:
+    name: Select CPU suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      suites: ${{ steps.select.outputs.suites }}
+      required-jobs: ${{ steps.select.outputs.required-jobs }}
+    steps:
+      - name: Checkout PR merge commit
+        uses: NVIDIA/spark-rapids-common/checkout@main
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      # Local actions validate the PR implementation before it reaches main.
+      - name: Select affected CPU suites
+        id: select
+        uses: ./workflow-suite-selector
+        with:
+          catalog-path: .github/cpu-ci-suites.json
+          base-branch: main
+          selector-job: select
+
+  runner-fallback:
+    name: Runner fallback tests
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.suites), 'runner-fallback')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout PR merge commit
+        uses: NVIDIA/spark-rapids-common/checkout@main
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Test CPU and GPU fallback without real dispatches or GitHub API calls
+        run: node --test runner-queue-fallback/test/*.test.js
+
+  shimpler:
+    name: Shimpler source-tool tests
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.suites), 'shimpler')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout PR merge commit
+        uses: NVIDIA/spark-rapids-common/checkout@main
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Run source tool tests
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -m unittest discover -s shimpler-source-tools/tests -p 'test_*.py' -v
+
+  spark-home:
+    name: Spark-home dependency tests
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.suites), 'spark-home')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout PR merge commit
+        uses: NVIDIA/spark-rapids-common/checkout@main
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Run Spark home dependency tool tests
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -m unittest discover -s spark-home-deps/tests -p 'test_*.py' -v
+
+  gate:
+    name: CPU CI gate
+    if: always()
+    needs: [select, runner-fallback, shimpler, spark-home]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout PR merge commit
+        uses: NVIDIA/spark-rapids-common/checkout@main
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      # Unaffected suites may skip; failed selection/tests or required skips fail.
+      - name: Check selected suite results
+        uses: ./workflow-result-gate
+        with:
+          needs: ${{ toJSON(needs) }}
+          required-jobs: ${{ needs.select.outputs.required-jobs }}

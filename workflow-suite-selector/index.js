@@ -64,9 +64,16 @@ function selectSuites(files, config) {
 }
 
 function pullNumber(context) {
+  if (context.eventName === 'pull_request') {
+    const number = context.payload?.pull_request?.number;
+    if (Number.isSafeInteger(number) && number > 0 && context.ref === `refs/pull/${number}/merge`) {
+      return number;
+    }
+    throw new Error('Suite selection requires an open pull_request merge ref');
+  }
   const match = context.eventName === 'push' &&
     /^refs\/heads\/pull-request\/([1-9][0-9]*)$/.exec(context.ref || '');
-  if (!match) throw new Error('Suite selection requires a push to refs/heads/pull-request/<number>');
+  if (!match) throw new Error('Suite selection requires pull_request or a push to pull-request/<number>');
   return Number(match[1]);
 }
 
@@ -87,8 +94,14 @@ async function select({github, context, core, catalog, baseBranch, selectorJob})
   });
   // Check runs share a head SHA; another target branch must not waive this branch's tests.
   if (pr.base.ref !== baseBranch) throw new Error(`Suite selection only supports PRs targeting ${baseBranch}`);
-  if (pr.state !== 'open' || context.sha !== pr.head.sha) {
-    throw new Error('Push commit does not match the head of an open PR');
+  // pull_request runs test a merge commit; the event identifies its source head and base.
+  const eventPr = context.eventName === 'pull_request' ? context.payload.pull_request : undefined;
+  const headSha = eventPr ? eventPr.head?.sha : context.sha;
+  if (pr.state !== 'open' || headSha !== pr.head.sha) {
+    throw new Error('Workflow does not match the head of an open PR');
+  }
+  if (eventPr && (eventPr.base?.sha !== pr.base.sha || eventPr.base?.ref !== pr.base.ref)) {
+    throw new Error('PR base changed since this event; update the PR branch and run CI again');
   }
   const files = await github.paginate(github.rest.pulls.listFiles, {
     ...context.repo, pull_number: pr.number, per_page: 100,

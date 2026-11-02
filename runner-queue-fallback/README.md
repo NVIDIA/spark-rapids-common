@@ -306,9 +306,9 @@ node --test runner-queue-fallback/test/*.test.js
 
 It exercises the coordinator, post cleanup and child guard using a fake GitHub
 API and clock. No real API calls, credentials, sleeps or worker allocations are used.
-The hosted-CPU test workflow runs only for PRs changing `runner-queue-fallback/**` or
-`.github/workflows/runner-queue-fallback-test.yml`. Keep this path-filtered workflow
-non-required globally so unrelated PRs are not blocked by an absent check.
+The [CPU CI workflow](../.github/workflows/cpu-ci.yml) selects this suite for runner,
+image-coordinator, or shared CI changes. Unaffected jobs may skip; require only its
+always-running `CPU CI gate` after rollout validation, not the individual suite job.
 
 Do not enable broad PR traffic until a bounded pilot proves primary success, queue
 fallback, exhaustion, product failure without retry, parent cancellation and the

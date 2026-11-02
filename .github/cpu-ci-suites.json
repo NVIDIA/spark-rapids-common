@@ -1,0 +1,37 @@
+{
+  "shared_paths": [
+    ".github/workflows/cpu-ci.yml",
+    "workflow-suite-selector/index.js",
+    "workflow-suite-selector/action.yml",
+    "workflow-result-gate/index.js",
+    "workflow-result-gate/action.yml"
+  ],
+  "suites": {
+    "runner-fallback": {
+      "enabled": true,
+      "comment": "CPU and GPU queue-controller tests with mocked APIs; no real dispatches.",
+      "paths": [
+        "runner-queue-fallback/",
+        ".github/workflows/image-build.yml",
+        ".github/workflows/image-build-worker.yml",
+        ".github/image-builds.json"
+      ],
+      "exclude_paths": ["**/*.md"],
+      "jobs": ["runner-fallback"]
+    },
+    "shimpler": {
+      "enabled": true,
+      "comment": "Existing Shimpler source-tool unit tests.",
+      "paths": ["shimpler-source-tools/"],
+      "exclude_paths": ["**/*.md"],
+      "jobs": ["shimpler"]
+    },
+    "spark-home": {
+      "enabled": true,
+      "comment": "Existing Spark-home dependency-tool unit tests.",
+      "paths": ["spark-home-deps/"],
+      "exclude_paths": ["**/*.md"],
+      "jobs": ["spark-home"]
+    }
+  }
+}

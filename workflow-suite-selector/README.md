@@ -2,10 +2,17 @@
 
 Select test suites from the full PR diff and output the jobs that must pass.
 
-**Supported workflow:** a `push` event on `pull-request/<number>` in the PR's base
-repository. The pushed commit must equal that open PR's current head, and the PR
-must target the supplied `base-branch`. Other events, including `pull_request`,
-`pull_request_target`, `workflow_dispatch`, and `merge_group`, are not supported.
+**Supported workflows:**
+
+- Normal `pull_request` events on `refs/pull/<number>/merge`. GitHub runs the merge
+  commit; the event's source head and base must match the current open PR.
+- `push` events on `pull-request/<number>` in the PR's base repository. The pushed
+  commit must equal the current open PR head.
+
+The PR must target the supplied `base-branch`. `pull_request_target`,
+`workflow_dispatch`, and `merge_group` are not supported. Check out `github.sha`
+for either supported event. If the PR head or base changes, run CI for an updated
+PR revision rather than accepting selection from stale metadata.
 
 This action does not check PR review approvals, `/ok to test` comments, or who
 pushed the branch. The caller must enforce CI execution authorization beforehand;
@@ -87,13 +94,15 @@ by another selected suite remain required. Restore `enabled: true` to resume.
 Omitting `enabled` defaults to `true` for existing catalogs. Non-boolean values or
 a disabled suite without a nonempty `comment` fail selection.
 
-Configure the supported trigger and selector job:
+For an ordinary PR workflow, configure the trigger and selector job below. Do not
+add event-level `paths` filters: the selector and final gate must run even when
+every workload is unaffected. The caller still follows its repository's fork
+approval policy; this action does not grant permission to run untrusted code.
 
 ```yaml
 on:
-  push:
-    branches:
-      - 'pull-request/[0-9]+'
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -119,6 +128,15 @@ jobs:
           selector-job: select
 ```
 
+For an approval-gated copied-head workflow, replace only the trigger above with:
+
+```yaml
+on:
+  push:
+    branches:
+      - 'pull-request/[0-9]+'
+```
+
 The three shown inputs are required. `selector-job` is the caller's job ID, not its
 display name. Optional `github-token` defaults to `github.token` and needs PR read access.
 
@@ -130,3 +148,5 @@ fail selection rather than skipping tests.
 Use `suites` to conditionally run the consumer's build/test jobs, then pass
 `required-jobs` to the [workflow result gate](../workflow-result-gate/README.md).
 The shared actions must be available at the chosen ref before running the consumer.
+This repository's [CPU CI](../.github/workflows/cpu-ci.yml) uses local action paths
+after checkout to validate action changes within the PR itself, before merge.

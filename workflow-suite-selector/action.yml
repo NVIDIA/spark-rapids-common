@@ -13,8 +13,9 @@
 # limitations under the License.
 
 name: Workflow suite selector
-description: Select required jobs from the PR diff for a push to pull-request/<number>
-# Only supports push events on pull-request/<number> at the open PR's current head.
+description: Select required jobs for pull_request or a copied PR-head push
+# Supports normal pull_request merge refs and push events on pull-request/<number>.
+# Checks the current open PR head, plus the event base for pull_request runs.
 # The caller authorizes CI execution; this action does not check review/comment approval.
 # Checkout github.sha first; grant contents: read and pull-requests: read.
 # The caller owns the catalog: shared_paths affect every enabled suite,
