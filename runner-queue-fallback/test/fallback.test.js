@@ -35,6 +35,10 @@ const cpuRunners = [
 
 function fixture(t, runners = gpuRunners) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'runner-fallback-'));
+  const label = runners?.[0]?.labels ?? '';
+  const family = label.includes('-cpu') ? 'cpu' : 'gpu';
+  const architecture = label.includes('-arm64-') ? 'arm64' : 'amd64';
+  const gpuCount = family === 'gpu' ? label.match(/-(\d+)$/)?.[1] : undefined;
   const env = {
     GITHUB_API_URL: 'https://api.example.invalid',
     GITHUB_SERVER_URL: 'https://example.invalid',
@@ -48,6 +52,7 @@ function fixture(t, runners = gpuRunners) {
     INPUT_WORKFLOW: 'runner-worker.yml', 'INPUT_WORKFLOW-REF': 'main',
     'INPUT_SOURCE-REF': 'refs/pull/1/merge', 'INPUT_SOURCE-SHA': sourceSha,
     INPUT_RUNNERS: JSON.stringify(runners),
+    'INPUT_RUNNER-TYPE': `${family}-${architecture}${gpuCount && gpuCount !== '1' ? `-${gpuCount}gpu` : ''}`,
     INPUT_WORKLOAD: JSON.stringify({artifactRunId: 42, artifactName: 'build'}),
     'INPUT_QUEUE-TIMEOUT-MINUTES': '1', 'INPUT_EXECUTION-TIMEOUT-MINUTES': '1',
     'INPUT_REQUEST-ID': 'runner-7-1-guard',
@@ -196,6 +201,114 @@ test('primary success forwards immutable inputs and reports the selected run', {
   const summary = fs.readFileSync(process.env.GITHUB_STEP_SUMMARY, 'utf8');
   assert.ok(summary.includes(`[View worker job logs here](${url}/job/1000)`));
   assert.ok(summary.includes(`[Worker artifacts](${url})`));
+});
+
+const expectedDefaults = {
+  'gpu-amd64': [
+    {group: 'nv-gpu-amd64-rtxpro6000-1gpu', labels: 'linux-amd64-gpu-rtxpro6000-latest-1'},
+    {group: 'nv-gpu-amd64-h100-1gpu', labels: 'linux-amd64-gpu-h100-latest-1'},
+    {group: 'nv-gpu-amd64-h200-1gpu', labels: 'linux-amd64-gpu-h200-latest-1'},
+    {group: 'nv-gpu-amd64-a100-1gpu', labels: 'linux-amd64-gpu-a100-latest-1'},
+    {group: 'nv-gpu-amd64-l40g-1gpu', labels: 'linux-amd64-gpu-l40g-latest-1'},
+    {group: 'nv-gpu-general', labels: 'linux-amd64-gpu-l4-latest-1'},
+  ],
+  'gpu-arm64': ['gb300', 'gh200', 'a100', 'l4'].map(gpu => ({
+    group: `nv-gpu-arm64-${gpu}-1gpu`, labels: `linux-arm64-gpu-${gpu}-latest-1`,
+  })),
+  'gpu-amd64-2gpu': ['rtxpro6000', 'h100', 'h200'].map(gpu => ({
+    group: `nv-gpu-amd64-${gpu}-2gpu`, labels: `linux-amd64-gpu-${gpu}-latest-2`,
+  })),
+  'gpu-arm64-2gpu': [
+    {group: 'nv-gpu-arm64-l4-2gpu', labels: 'linux-arm64-gpu-l4-latest-2'},
+  ],
+  'cpu-amd64': [16, 8, 32].map(size => ({group: 'nv-cpu-general', labels: `linux-amd64-cpu${size}`})),
+  'cpu-arm64': [16, 8, 32].map(size => ({group: 'nv-cpu-general', labels: `linux-arm64-cpu${size}`})),
+};
+for (const [type, runners] of Object.entries(expectedDefaults)) {
+  test(`${type} defaults exhaust in order without architecture or GPU-count downgrade`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    process.env['INPUT_RUNNER-TYPE'] = type;
+    delete process.env.INPUT_RUNNERS;
+    assert.equal(await f.run(), 1);
+    assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)), runners);
+    assert.ok(f.runs.every(run => run.conclusion === 'cancelled'));
+    assert.equal(f.outputs().attempts, String(runners.length));
+    assert.match(f.errors.join('\n'), /All runner candidates exhausted/);
+    assert.ok(f.logs.some(line => line.startsWith(`Using shared defaults for ${type}:`)));
+    assert.equal(f.state(), null);
+  });
+}
+
+for (const type of ['cpu', 'gpu']) {
+  test(`${type} selects the amd64 defaults`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    process.env['INPUT_RUNNER-TYPE'] = type;
+    delete process.env.INPUT_RUNNERS;
+    assert.equal(await f.run(), 1);
+    assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)), expectedDefaults[`${type}-amd64`]);
+    assert.equal(f.state(), null);
+  });
+}
+
+for (const type of [undefined, '', ' \n\t', 'gpu-unknown', 'gpu-amd64-4gpu', 'toString']) {
+  for (const override of [false, true]) {
+    test(`reject runner-type ${JSON.stringify(type)} with override=${override} before dispatch`, {timeout: 5000}, async t => {
+      const f = fixture(t);
+      if (type === undefined) delete process.env['INPUT_RUNNER-TYPE'];
+      else process.env['INPUT_RUNNER-TYPE'] = type;
+      if (!override) delete process.env.INPUT_RUNNERS;
+      assert.equal(await f.run(), 1);
+      assert.equal(f.requests.length, 0);
+      assert.match(f.errors.join('\n'), /runner-type/);
+    });
+  }
+}
+
+for (const type of ['cpu-amd64', 'gpu-arm64', 'gpu-amd64-2gpu']) {
+  test(`reject single-GPU amd64 override for ${type}`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    process.env['INPUT_RUNNER-TYPE'] = type;
+    assert.equal(await f.run(), 1);
+    assert.equal(f.requests.length, 0);
+    assert.match(f.errors.join('\n'), /runners must match runner-type/);
+  });
+}
+
+test('explicit two-GPU override retains the requested count and order', {timeout: 5000}, async t => {
+  const runners = expectedDefaults['gpu-amd64-2gpu'].slice().reverse();
+  const f = fixture(t, runners);
+  f.onDispatch = run => { if (run.id === 102) f.finish(run, 'success'); };
+  assert.equal(await f.run(), 0);
+  assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)), runners);
+  assert.equal(f.state(), null);
+});
+
+for (const value of ['', ' \n\t']) {
+  test(`blank runners ${JSON.stringify(value)} use the default primary pool`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    process.env.INPUT_RUNNERS = value;
+    f.onDispatch = run => f.finish(run, 'success');
+    assert.equal(await f.run(), 0);
+    assert.equal(f.runs.length, 1);
+    assert.deepEqual(JSON.parse(f.outputs().runner), gpuRunners[0]);
+  });
+}
+
+test('explicit GPU runners replace defaults without adding more pools', {timeout: 5000}, async t => {
+  const runners = [gpuRunners[2], gpuRunners[1]];
+  const f = fixture(t, runners);
+  assert.equal(await f.run(), 1);
+  assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)), runners);
+  assert.ok(f.runs.every(run => run.conclusion === 'cancelled'));
+  assert.ok(!f.logs.some(line => line.startsWith('Using shared defaults')));
+  assert.equal(f.state(), null);
+});
+
+test('malformed runners do not silently select default pools', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  process.env.INPUT_RUNNERS = 'invalid-json';
+  assert.equal(await f.run(), 1);
+  assert.equal(f.requests.length, 0);
 });
 
 for (const [kind, runners] of [['GPU', gpuRunners], ['CPU', cpuRunners]]) {
@@ -762,24 +875,24 @@ test('CPU queue exhaustion is bounded by the supplied labels', {timeout: 5000}, 
   assert.equal(f.state(), null);
 });
 
-test('four x86 CPU sizes use ten-minute queues and cancel before each switch', {timeout: 5000}, async t => {
-  const runners = [16, 8, 4, 32].map(size => ({
+test('default x86 CPU sizes use ten-minute queues and cancel before each switch', {timeout: 5000}, async t => {
+  const runners = [16, 8, 32].map(size => ({
     group: 'nv-cpu-general', labels: `linux-amd64-cpu${size}`,
   }));
   const f = fixture(t, runners);
+  delete process.env.INPUT_RUNNERS;
   process.env['INPUT_QUEUE-TIMEOUT-MINUTES'] = '10';
   const started = f.now;
-  f.onDispatch = run => { if (run.id === 103) f.finish(run, 'success'); };
+  f.onDispatch = run => { if (run.id === 102) f.finish(run, 'success'); };
   assert.equal(await f.run(), 0);
-  assert.equal(f.now - started, 3 * 10 * 60000 + 4 * 15000);
+  assert.equal(f.now - started, 2 * 10 * 60000 + 3 * 15000);
   assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)), runners);
   assert.deepEqual(f.events, [
     'dispatch:100', 'cancel:100', 'completed:100:cancelled',
     'dispatch:101', 'cancel:101', 'completed:101:cancelled',
-    'dispatch:102', 'cancel:102', 'completed:102:cancelled',
-    'dispatch:103', 'completed:103:success',
+    'dispatch:102', 'completed:102:success',
   ]);
-  assert.equal(f.outputs().attempts, '4');
+  assert.equal(f.outputs().attempts, '3');
   assert.equal(f.state(), null);
 });
 
@@ -792,7 +905,9 @@ test('CPU workload failure does not retry on a larger CPU label', {timeout: 5000
 });
 
 const invalidRunners = [
-  ['more than four candidates', [...cpuRunners, ...gpuRunners], /one to four candidates/],
+  ['empty list', [], /one to six candidates/],
+  ['null list', null, /one to six candidates/],
+  ['more than six candidates', [...cpuRunners, ...gpuRunners, ...cpuRunners], /one to six candidates/],
   ['mixed CPU/GPU', [cpuRunners[0], gpuRunners[0]], /CPU\/GPU family/],
   ['mixed architectures', [cpuRunners[0], {group: 'nv-cpu-general', labels: 'linux-arm64-cpu32'}], /architecture/],
   ['mixed operating systems', [cpuRunners[0], {group: 'nv-cpu-general', labels: 'windows-amd64-cpu32'}], /OS/],

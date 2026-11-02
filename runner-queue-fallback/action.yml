@@ -30,9 +30,14 @@ inputs:
   source-sha:
     description: Full approved source SHA; must match source-ref throughout the run
     required: true
-  runners:
-    description: Ordered JSON array of up to four compatible CPU or GPU runner objects with group and labels
+  runner-type:
+    description: Required profile - cpu or gpu (amd64), cpu-arm64, gpu-arm64, or gpu-{amd64,arm64}-2gpu; explicit cpu-amd64 and gpu-amd64 also accepted
+    # The family is mandatory. Unsuffixed GPU profiles request one GPU.
     required: true
+  runners:
+    description: Optional ordered JSON array replacing the selected profile's default pools; must match its family, architecture and GPU count
+    # Linux defaults live in index.js. Override for restricted access or hardware requirements.
+    required: false
   workload:
     description: JSON object passed unchanged to the child, such as image digest and artifact run ID
     default: '{}'

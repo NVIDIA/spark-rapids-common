@@ -57,7 +57,7 @@ jobs:
       matrix:
         image: ${{ fromJSON(needs.configure.outputs.images) }}
     runs-on: ubuntu-latest
-    # Four 10-minute queues, one 30-minute build, and cancellation/API overhead.
+    # Three 10-minute queues, one 30-minute build, and cancellation/API overhead.
     timeout-minutes: 90
     permissions:
       contents: read
@@ -76,12 +76,6 @@ jobs:
           source-ref: ${{ github.ref }}
           source-sha: ${{ github.sha }}
           workload: ${{ toJSON(matrix) }}
+          runner-type: cpu-amd64
           queue-timeout-minutes: '10'
           execution-timeout-minutes: '30'
-          runners: >-
-            [
-              {"group":"nv-cpu-general","labels":"linux-amd64-cpu16"},
-              {"group":"nv-cpu-general","labels":"linux-amd64-cpu8"},
-              {"group":"nv-cpu-general","labels":"linux-amd64-cpu4"},
-              {"group":"nv-cpu-general","labels":"linux-amd64-cpu32"}
-            ]
