@@ -37,7 +37,16 @@ function selectSuites(files, config) {
         !suite.jobs.every(validJob) || new Set(suite.jobs).size !== suite.jobs.length) {
       throw new Error(`Invalid suite: ${name}`);
     }
-    return matches(config.shared_paths) || matches(suite.paths);
+    if (suite.enabled !== undefined && typeof suite.enabled !== 'boolean') {
+      throw new Error(`Suite ${name}: enabled must be a boolean`);
+    }
+    if (suite.comment !== undefined && typeof suite.comment !== 'string') {
+      throw new Error(`Suite ${name}: comment must be a string`);
+    }
+    if (suite.enabled === false && !suite.comment?.trim()) {
+      throw new Error(`Suite ${name}: disabling a suite requires a nonempty comment`);
+    }
+    return suite.enabled !== false && (matches(config.shared_paths) || matches(suite.paths));
   }).map(([name]) => name);
 }
 
@@ -76,12 +85,15 @@ async function select({github, context, core, catalog, baseBranch, selectorJob})
   const suites = selectSuites(files, catalog);
   await assertCurrent(github, context.repo, pr);
 
+  for (const [name, suite] of Object.entries(catalog.suites)) {
+    if (suite.enabled === false) core.info(`Suite ${name} is disabled: ${suite.comment}`);
+  }
   core.setOutput('suites', JSON.stringify(suites));
   core.setOutput('required-jobs', JSON.stringify([
     ...new Set([selectorJob, ...suites.flatMap(name => catalog.suites[name].jobs)]),
   ]));
   await core.summary.addHeading('Test suite selection')
-    .addRaw(`PR #${pr.number}, head ${pr.head.sha}: ${suites.join(', ') || 'no affected suites'}`)
+    .addRaw(`PR #${pr.number}, head ${pr.head.sha}: ${suites.join(', ') || 'no enabled suites affected'}`)
     .write();
 }
 

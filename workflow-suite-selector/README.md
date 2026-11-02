@@ -20,14 +20,27 @@ Keep the path catalog in the consumer repository, for example `.github/ci-suites
 {
   "shared_paths": [".github/workflows/ci.yml"],
   "suites": {
-    "unit": {"paths": ["src/"], "jobs": ["build", "test"]}
+    "unit": {
+      "enabled": true,
+      "comment": "Unit tests for source changes.",
+      "paths": ["src/"],
+      "jobs": ["build", "test"]
+    }
   }
 }
 ```
 
 Paths are exact filenames or directory prefixes ending in `/`, not globs.
-Changed files matching `shared_paths` select every suite, so list paths that affect all workloads.
+Changed files matching `shared_paths` select every enabled suite, so list paths that affect all workloads.
 The catalog itself is not automatically a trigger. Renames check both old and new paths.
+
+To temporarily pause a suite, set its `enabled` to `false` and replace `comment`
+with the reason (for example, a tracking issue and the condition for re-enabling).
+Disabled suites are excluded even when a shared path changes, and their reasons
+are printed in the selection log. The selector and final gate still run; jobs used
+by another selected suite remain required. Restore `enabled: true` to resume.
+Omitting `enabled` defaults to `true` for existing catalogs. Non-boolean values or
+a disabled suite without a nonempty `comment` fail selection.
 
 Configure the supported trigger and selector job:
 

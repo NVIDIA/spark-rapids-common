@@ -17,8 +17,10 @@ description: Select required jobs from the PR diff for a push to pull-request/<n
 # Only supports push events on pull-request/<number> at the open PR's current head.
 # The caller authorizes CI execution; this action does not check review/comment approval.
 # Checkout github.sha first; grant contents: read and pull-requests: read.
-# The caller owns the catalog: shared_paths affect every suite,
+# The caller owns the catalog: shared_paths affect every enabled suite,
 # suites.<name>.paths select that suite, and suites.<name>.jobs lists required jobs.
+# Suites default to enabled. To pause one, set enabled: false and explain why in comment.
+# Disabled suites are never selected; the selector remains required by the final gate.
 # Paths are exact files or directory prefixes ending in /, not glob patterns.
 # Pass required-jobs to workflow-result-gate; include this selector in gate.needs.
 inputs:
