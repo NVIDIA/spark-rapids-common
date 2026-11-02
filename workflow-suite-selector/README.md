@@ -34,6 +34,10 @@ Paths are exact filenames or directory prefixes ending in `/`, not globs.
 Changed files matching `shared_paths` select every enabled suite, so list paths that affect all workloads.
 The catalog itself is not automatically a trigger. Renames check both old and new paths.
 
+`jobs` lists existing workflow job IDs, not display names or runner types. When a
+suite is selected, every listed job must succeed for the final gate to pass. This
+list does not create jobs; define them in the workflow and include them in the gate's `needs`.
+
 To temporarily pause a suite, set its `enabled` to `false` and replace `comment`
 with the reason (for example, a tracking issue and the condition for re-enabling).
 Disabled suites are excluded even when a shared path changes, and their reasons
