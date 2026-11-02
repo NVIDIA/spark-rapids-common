@@ -22,17 +22,33 @@ Keep the path catalog in the consumer repository, for example `.github/ci-suites
   "suites": {
     "unit": {
       "enabled": true,
-      "comment": "Test all changes except documentation.",
-      "exclude_paths": ["docs/", "**/*.md"],
+      "comment": "Test source changes except generated files and documentation.",
+      "paths": ["src/"],
+      "exclude_paths": ["src/generated/", "**/*.md"],
       "jobs": ["build", "test"]
     }
   }
 }
 ```
 
-Omit a suite's `paths` to include **all changed files**, including hidden files.
-To limit it to a subtree instead, set `"paths": ["src/"]`. Include paths and
-`shared_paths` remain exact filenames or directory prefixes ending in `/`, not globs.
+`paths` defines the suite's scope; `exclude_paths` removes files **within that scope**.
+Both use repository-relative paths, not paths relative to each included directory.
+In this example, `src/code.cpp` selects the suite, while `src/generated/code.cpp`,
+`src/README.md`, and `other/code.cpp` do not. A code change plus excluded docs still runs tests.
+
+To cover the whole repository, set `"paths": ["**"]`:
+
+```json
+{
+  "paths": ["**"],
+  "exclude_paths": ["docs/", "**/*.md"]
+}
+```
+
+Here `**` explicitly includes all changed files, including hidden files and nested
+directories. Omitting `paths` has the same behavior for existing catalogs.
+Other include paths and `shared_paths` are exact filenames or directory prefixes
+ending in `/`, not globs. A single `*` is not supported as an all-files shortcut.
 An empty `paths` list is invalid; use `enabled: false` to pause a suite.
 
 Optional `exclude_paths` filters individual files for that suite:

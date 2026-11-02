@@ -22,10 +22,10 @@ function selectSuites(files, config) {
     (file.previous_filename !== undefined && typeof file.previous_filename !== 'string'))) {
     throw new Error('Invalid PR file metadata');
   }
-  const validPaths = (paths, globs = false) => Array.isArray(paths) &&
+  const validPaths = (paths, {globs = false, allFiles = false} = {}) => Array.isArray(paths) &&
     paths.every(path => typeof path === 'string' && path.length > 0 &&
       !path.startsWith('/') && !path.startsWith('!') && !path.includes('..') &&
-      !path.includes('\\') && (globs || !/[?*]/.test(path)));
+      !path.includes('\\') && (globs || (allFiles && path === '**') || !/[?*]/.test(path)));
   const sharedPaths = config?.shared_paths === undefined ? [] : config.shared_paths;
   if (!config || !validPaths(sharedPaths) || !config.suites ||
       typeof config.suites !== 'object' || Array.isArray(config.suites) ||
@@ -37,12 +37,13 @@ function selectSuites(files, config) {
   const shared = changed.some(file => sharedPaths.some(path => matches(file, path)));
   return Object.entries(config.suites).filter(([name, suite]) => {
     if (!/^[a-z][a-z0-9-]*$/.test(name) || !suite ||
-        (suite.paths !== undefined && (!validPaths(suite.paths) || suite.paths.length === 0)) ||
+        (suite.paths !== undefined &&
+          (!validPaths(suite.paths, {allFiles: true}) || suite.paths.length === 0)) ||
         !Array.isArray(suite.jobs) || suite.jobs.length === 0 ||
         !suite.jobs.every(validJob) || new Set(suite.jobs).size !== suite.jobs.length) {
       throw new Error(`Invalid suite: ${name}`);
     }
-    if (suite.exclude_paths !== undefined && !validPaths(suite.exclude_paths, true)) {
+    if (suite.exclude_paths !== undefined && !validPaths(suite.exclude_paths, {globs: true})) {
       throw new Error(`Suite ${name}: exclude_paths must be an array of relative paths or glob patterns`);
     }
     if (suite.enabled !== undefined && typeof suite.enabled !== 'boolean') {
@@ -56,7 +57,7 @@ function selectSuites(files, config) {
     }
     // Filter each path, not the whole PR; shared changes and either side of a rename still count.
     return suite.enabled !== false && (shared || changed.some(file =>
-      (suite.paths === undefined || suite.paths.some(path => matches(file, path))) &&
+      (suite.paths === undefined || suite.paths.some(path => path === '**' || matches(file, path))) &&
       !suite.exclude_paths?.some(path => matches(file, path) ||
         matchesGlob(file, path.endsWith('/') ? `${path}**` : path))));
   }).map(([name]) => name);
