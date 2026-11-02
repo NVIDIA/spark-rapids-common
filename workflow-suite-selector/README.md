@@ -18,7 +18,7 @@ Keep the path catalog in the consumer repository, for example `.github/ci-suites
 
 ```json
 {
-  "shared_paths": [".github/ci-suites.json", ".github/workflows/ci.yml"],
+  "shared_paths": [".github/workflows/ci.yml"],
   "suites": {
     "unit": {"paths": ["src/"], "jobs": ["build", "test"]}
   }
@@ -26,7 +26,8 @@ Keep the path catalog in the consumer repository, for example `.github/ci-suites
 ```
 
 Paths are exact filenames or directory prefixes ending in `/`, not globs.
-Changes to `shared_paths` select every suite. Renames check both old and new paths.
+Changed files matching `shared_paths` select every suite, so list paths that affect all workloads.
+The catalog itself is not automatically a trigger. Renames check both old and new paths.
 
 Configure the supported trigger and selector job:
 
