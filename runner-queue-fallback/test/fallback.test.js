@@ -198,6 +198,51 @@ test('primary success forwards immutable inputs and reports the selected run', {
   assert.ok(summary.includes(`[Worker artifacts](${url})`));
 });
 
+test('omitted runners exhaust the shared GPU pools in order with confirmed cleanup', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  delete process.env.INPUT_RUNNERS;
+  assert.equal(await f.run(), 1);
+  assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)), [
+    {group: 'nv-gpu-amd64-rtxpro6000-1gpu', labels: 'linux-amd64-gpu-rtxpro6000-latest-1'},
+    {group: 'nv-gpu-amd64-h100-1gpu', labels: 'linux-amd64-gpu-h100-latest-1'},
+    {group: 'nv-gpu-amd64-a100-1gpu', labels: 'linux-amd64-gpu-a100-latest-1'},
+    {group: 'nv-gpu-general', labels: 'linux-amd64-gpu-l4-latest-1'},
+  ]);
+  assert.ok(f.runs.every(run => run.conclusion === 'cancelled'));
+  assert.equal(f.outputs().attempts, '4');
+  assert.match(f.errors.join('\n'), /All runner candidates exhausted/);
+  assert.ok(f.logs.some(line => line.startsWith('Using shared GPU runner defaults:')));
+  assert.equal(f.state(), null);
+});
+
+for (const value of ['', ' \n\t']) {
+  test(`blank runners ${JSON.stringify(value)} use the default primary pool`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    process.env.INPUT_RUNNERS = value;
+    f.onDispatch = run => f.finish(run, 'success');
+    assert.equal(await f.run(), 0);
+    assert.equal(f.runs.length, 1);
+    assert.deepEqual(JSON.parse(f.outputs().runner), gpuRunners[0]);
+  });
+}
+
+test('explicit GPU runners replace defaults without adding more pools', {timeout: 5000}, async t => {
+  const runners = [gpuRunners[2], gpuRunners[1]];
+  const f = fixture(t, runners);
+  assert.equal(await f.run(), 1);
+  assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)), runners);
+  assert.ok(f.runs.every(run => run.conclusion === 'cancelled'));
+  assert.ok(!f.logs.some(line => line.startsWith('Using shared GPU runner defaults:')));
+  assert.equal(f.state(), null);
+});
+
+test('malformed runners do not silently select default pools', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  process.env.INPUT_RUNNERS = 'invalid-json';
+  assert.equal(await f.run(), 1);
+  assert.equal(f.requests.length, 0);
+});
+
 for (const [kind, runners] of [['GPU', gpuRunners], ['CPU', cpuRunners]]) {
   test(`${kind} child metadata is first read after the initial fifteen-second delay`, {timeout: 5000}, async t => {
     const f = fixture(t, runners);
@@ -792,6 +837,8 @@ test('CPU workload failure does not retry on a larger CPU label', {timeout: 5000
 });
 
 const invalidRunners = [
+  ['empty list', [], /one to four candidates/],
+  ['null list', null, /one to four candidates/],
   ['more than four candidates', [...cpuRunners, ...gpuRunners], /one to four candidates/],
   ['mixed CPU/GPU', [cpuRunners[0], gpuRunners[0]], /CPU\/GPU family/],
   ['mixed architectures', [cpuRunners[0], {group: 'nv-cpu-general', labels: 'linux-arm64-cpu32'}], /architecture/],

@@ -141,16 +141,17 @@ by the caller. Memory-optimized labels such as `linux-amd64-cpu16m` require the
 matching `nv-cpu-memory` group and separate access. Nothing silently adds a larger
 instance or a memory-optimized pool.
 
-For a GPU workload, use the same action and worker contract, replacing `runners`
-with an approved GPU sequence, for example:
+For a GPU workload, omit `runners` to use the shared defaults: **RTX PRO 6000 ->
+H100 -> A100 -> L4**, all Linux amd64, one GPU, with `latest` labels. The group/label
+pairs are maintained in [index.js](index.js), so consumers do not need to copy them.
+Blank input also uses these defaults. The consuming repository must have access to
+all four pools, and the workload must support every GPU in the sequence.
 
-```json
-[
-  {"group":"nv-gpu-amd64-rtxpro6000-1gpu","labels":"linux-amd64-gpu-rtxpro6000-latest-1"},
-  {"group":"nv-gpu-amd64-h100-1gpu","labels":"linux-amd64-gpu-h100-latest-1"},
-  {"group":"nv-gpu-general","labels":"linux-amd64-gpu-l4-latest-1"}
-]
-```
+To use different pools or ordering, pass an explicit `runners` JSON array with
+`group` and `labels` for each candidate, as in the CPU example above. An explicit
+list replaces the defaults entirely; no extra pools are appended. CPU jobs must
+continue to pass their own list. Malformed JSON or an invalid list fails rather
+than falling back to defaults.
 
 Replace `Workload` with the GPU workload steps; `nvidia-smi` can be the initial GPU
 sanity check. Never mix CPU and GPU candidates in one sequence. A CPU-only job and

@@ -28,7 +28,15 @@ function minutes(name, maximum) {
 }
 
 function candidates() {
-  const runners = JSON.parse(input('runners'));
+  const configured = process.env.INPUT_RUNNERS?.trim();
+  // Keep the shared Linux amd64, single-GPU preference order in one place.
+  const runners = configured ? JSON.parse(configured) : [
+    {group: 'nv-gpu-amd64-rtxpro6000-1gpu', labels: 'linux-amd64-gpu-rtxpro6000-latest-1'},
+    {group: 'nv-gpu-amd64-h100-1gpu', labels: 'linux-amd64-gpu-h100-latest-1'},
+    {group: 'nv-gpu-amd64-a100-1gpu', labels: 'linux-amd64-gpu-a100-latest-1'},
+    {group: 'nv-gpu-general', labels: 'linux-amd64-gpu-l4-latest-1'},
+  ];
+  if (!configured) console.log('Using shared GPU runner defaults: RTX PRO 6000 -> H100 -> A100 -> L4');
   if (!Array.isArray(runners) || runners.length < 1 || runners.length > 4) {
     throw new Error('runners must contain one to four candidates');
   }
