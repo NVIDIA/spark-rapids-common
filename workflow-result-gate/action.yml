@@ -14,6 +14,9 @@
 
 name: Workflow result gate
 description: Check dependency results, requiring selected jobs to succeed rather than skip
+# Call from a job with if: always() and every checked job directly in needs.
+# Pass toJSON(needs) and selected job IDs, including the selector itself.
+# Required jobs must succeed; other jobs may skip but cannot fail or be cancelled.
 inputs:
   needs:
     description: JSON object from toJSON(needs); list every checked job in the caller's needs

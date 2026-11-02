@@ -8,5 +8,3 @@ This repository contains reusable GitHub Action workflows and common scripts use
 
 - [Runner queue fallback](runner-queue-fallback/README.md): shared runner acquisition
   and cleanup for repository-owned CPU and GPU workflows.
-- [Workflow result gate](workflow-result-gate/README.md): one required check for
-  conditional jobs, with explicit success requirements for selected workloads.
