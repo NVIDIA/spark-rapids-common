@@ -59,13 +59,9 @@ jobs:
           workflow-ref: main
           source-ref: ${{ inputs.source-ref }}
           source-sha: ${{ inputs.source-sha }}
+          runner-type: cpu
           queue-timeout-minutes: '10'
           execution-timeout-minutes: '15'
-          runners: >-
-            [
-              {"group":"nv-cpu-general","labels":"linux-amd64-cpu16"},
-              {"group":"nv-cpu-general","labels":"linux-amd64-cpu32"}
-            ]
 ```
 
 The CPU coordinator does not check out or execute workload code and does not hold
@@ -133,25 +129,50 @@ matrix, `needs`, environment approvals, job-level conditional skips, or concurre
 queue: this workflow isolates exactly one worker allocation so cancelling it cannot
 cancel upstream builds or unrelated jobs. Do not rerun a child directly; rerun its parent.
 
-### Choosing CPU or GPU labels
+### Choosing CPU or GPU pools
 
-The CPU example tries `linux-amd64-cpu16`, then `linux-amd64-cpu32` in
-`nv-cpu-general`. CPU sizes may differ because each candidate is explicitly chosen
-by the caller. Memory-optimized labels such as `linux-amd64-cpu16m` require the
-matching `nv-cpu-memory` group and separate access. Nothing silently adds a larger
-instance or a memory-optimized pool.
+Consumers **must** set `runner-type`, even with an explicit `runners` override.
+`cpu` means `cpu-amd64`; `gpu` means `gpu-amd64`. Missing, blank or unknown types
+fail before any API request. Omit `runners` (or leave it blank) to select the
+profile's shared Linux defaults:
 
-For a GPU workload, omit `runners` to use the shared defaults: **RTX PRO 6000 ->
-H100 -> A100 -> L4**, all Linux amd64, one GPU, with `latest` labels. The group/label
-pairs are maintained in [index.js](index.js), so consumers do not need to copy them.
-Blank input also uses these defaults. The consuming repository must have access to
-all four pools, and the workload must support every GPU in the sequence.
+| `runner-type` | GPUs per worker | Pool preference order |
+| --- | --- | --- |
+| `cpu` / `cpu-amd64` | None | 16 -> 8 -> 32 cores, amd64 |
+| `cpu-arm64` | None | 16 -> 8 -> 32 cores, arm64 |
+| `gpu` / `gpu-amd64` | 1 | RTX PRO 6000 -> H100 -> H200 -> A100 -> L40G -> L4 |
+| `gpu-arm64` | 1 | GB300 -> GH200 -> A100 -> L4 |
+| `gpu-amd64-2gpu` | 2 | RTX PRO 6000 -> H100 -> H200 |
+| `gpu-arm64-2gpu` | 2 | L4 only; no alternative pool currently granted |
 
-To use different pools or ordering, pass an explicit `runners` JSON array with
-`group` and `labels` for each candidate, as in the CPU example above. An explicit
-list replaces the defaults entirely; no extra pools are appended. CPU jobs must
-continue to pass their own list. Malformed JSON or an invalid list fails rather
-than falling back to defaults.
+For example, set `runner-type: gpu-amd64-2gpu` for two GPUs on **one worker**,
+not two independent workers. Queue exhaustion fails; it never downgrades GPU count
+or switches architecture. Counts above two have no default profile yet.
+
+The group/label pairs live in [index.js](index.js), based on the NVKS runner catalog
+and Spark project grants in `nv-gha-runners/enterprise-runner-configuration`
+(`docs/runner-groups.md` and `projects/spark.yaml`). GPU defaults use `latest` labels;
+CPU defaults use `nv-cpu-general` and exclude 4-core instances. These are maintained
+lists, not live discovery or a guarantee of queue availability.
+
+The consuming repository must have access to **every** selected pool, and its
+workload must support their GPU architectures, driver, VRAM and minimum CPU/RAM/disk.
+Repository-specific grants can be narrower than Spark's project defaults: common
+and tools currently have only `nv-cpu-general` and `nv-gpu-general`. They must use
+an explicit L4 list for GPU work instead of the broader default GPU profiles.
+
+To restrict pools or change their order, replace the whole list with `runners`:
+
+```yaml
+runner-type: gpu
+runners: '[{"group":"nv-gpu-general","labels":"linux-amd64-gpu-l4-latest-1"}]'
+```
+
+Overrides must match the selected CPU/GPU family, architecture and GPU count;
+no default pools are appended. Malformed JSON or invalid candidates fail rather
+than silently selecting defaults. Explicit lists can select another supported OS
+or driver track. CPU sizes may differ; memory-optimized labels such as
+`linux-amd64-cpu16m` require `nv-cpu-memory` and separate access.
 
 Replace `Workload` with the GPU workload steps; `nvidia-smi` can be the initial GPU
 sanity check. Never mix CPU and GPU candidates in one sequence. A CPU-only job and
@@ -170,8 +191,9 @@ turn required test failures into success. Public GHCR images need no registry lo
 
 The repository's [daily image workflow](../.github/workflows/image-build.yml) reads
 its image matrix from the [image catalog](../.github/image-builds.json), currently
-containing the signoff image. It tries `linux-amd64-cpu16`, `cpu8`, `cpu4`, then
-`cpu32`, all in `nv-cpu-general`, with a **10-minute queue timeout per candidate**.
+containing the signoff image. It selects `runner-type: cpu-amd64`, trying
+`linux-amd64-cpu16`, `cpu8`, then `cpu32`, all in `nv-cpu-general`, with a
+**10-minute queue timeout per candidate**.
 Only one managed worker runs at a time. Memory-optimized groups are not enabled for
 this repository, and ARM runners are intentionally excluded from this sequence.
 
@@ -201,7 +223,7 @@ trigger are unchanged; rerun the parent, not the dispatched worker.
 
 ## Behavior and limits
 
-- One to four candidates, in the supplied order, never concurrent. Default queue
+- One to six candidates, in the selected order, never concurrent. Default queue
   deadline: 10 minutes each. Override from 1 to 30 minutes. The queue clock starts
   when the single worker job is first observed queued, not during upstream preparation.
 - NVIDIA runner labels must preserve OS, architecture and CPU/GPU family. GPU
@@ -243,8 +265,10 @@ trigger are unchanged; rerun the parent, not the dispatched worker.
   API outages can prevent cleanup; a child already executing then relies on its
   own `timeout-minutes`. Check the reported run ID if cleanup cannot be confirmed.
 - Set the parent timeout above all queue budgets, one execution budget and cleanup
-  time. The example allows 65 minutes for up to 40 minutes of queueing, 15 minutes of
-  execution and overhead. Defaults allow 180 minutes of execution; a longer real
+  time. The CPU example allows 65 minutes for up to 30 minutes of queueing, 15 minutes of
+  execution and overhead. The six-pool GPU default needs a larger parent budget
+  (for example, 100 minutes for 60 minutes of queueing, 15 of execution and overhead).
+  Defaults allow 180 minutes of execution; a longer real
   workload needs correspondingly larger parent and child timeouts.
 - Logs and the parent step summary report candidates, observed waits, child links
   and outcomes, including the primary error and confirmed/unconfirmed cleanup.

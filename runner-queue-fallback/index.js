@@ -19,6 +19,34 @@ const {randomUUID} = require('node:crypto');
 const {input, output, save, fail, client, currentSource, parentActive,
   acquired, snapshot, cancel, cleanup, sleep} = require('./lib');
 
+// Linux defaults from enterprise-runner-configuration's runner catalog and Spark grants.
+// Keep architectures and GPU counts separate; consumers may have narrower grants.
+const defaultRunners = {
+  'cpu-amd64': [16, 8, 32].map(size => ({
+    group: 'nv-cpu-general', labels: `linux-amd64-cpu${size}`,
+  })),
+  'cpu-arm64': [16, 8, 32].map(size => ({
+    group: 'nv-cpu-general', labels: `linux-arm64-cpu${size}`,
+  })),
+  'gpu-amd64': [
+    {group: 'nv-gpu-amd64-rtxpro6000-1gpu', labels: 'linux-amd64-gpu-rtxpro6000-latest-1'},
+    {group: 'nv-gpu-amd64-h100-1gpu', labels: 'linux-amd64-gpu-h100-latest-1'},
+    {group: 'nv-gpu-amd64-h200-1gpu', labels: 'linux-amd64-gpu-h200-latest-1'},
+    {group: 'nv-gpu-amd64-a100-1gpu', labels: 'linux-amd64-gpu-a100-latest-1'},
+    {group: 'nv-gpu-amd64-l40g-1gpu', labels: 'linux-amd64-gpu-l40g-latest-1'},
+    {group: 'nv-gpu-general', labels: 'linux-amd64-gpu-l4-latest-1'},
+  ],
+  'gpu-arm64': ['gb300', 'gh200', 'a100', 'l4'].map(gpu => ({
+    group: `nv-gpu-arm64-${gpu}-1gpu`, labels: `linux-arm64-gpu-${gpu}-latest-1`,
+  })),
+  'gpu-amd64-2gpu': ['rtxpro6000', 'h100', 'h200'].map(gpu => ({
+    group: `nv-gpu-amd64-${gpu}-2gpu`, labels: `linux-amd64-gpu-${gpu}-latest-2`,
+  })),
+  'gpu-arm64-2gpu': [
+    {group: 'nv-gpu-arm64-l4-2gpu', labels: 'linux-arm64-gpu-l4-latest-2'},
+  ],
+};
+
 function minutes(name, maximum) {
   const value = Number(input(name));
   if (!Number.isInteger(value) || value < 1 || value > maximum) {
@@ -28,17 +56,15 @@ function minutes(name, maximum) {
 }
 
 function candidates() {
+  const requestedType = input('runner-type');
+  const type = ['cpu', 'gpu'].includes(requestedType) ? `${requestedType}-amd64` : requestedType;
+  if (!Object.hasOwn(defaultRunners, type)) {
+    throw new Error(`runner-type must be cpu, gpu, or one of: ${Object.keys(defaultRunners).join(', ')}`);
+  }
   const configured = process.env.INPUT_RUNNERS?.trim();
-  // Keep the shared Linux amd64, single-GPU preference order in one place.
-  const runners = configured ? JSON.parse(configured) : [
-    {group: 'nv-gpu-amd64-rtxpro6000-1gpu', labels: 'linux-amd64-gpu-rtxpro6000-latest-1'},
-    {group: 'nv-gpu-amd64-h100-1gpu', labels: 'linux-amd64-gpu-h100-latest-1'},
-    {group: 'nv-gpu-amd64-a100-1gpu', labels: 'linux-amd64-gpu-a100-latest-1'},
-    {group: 'nv-gpu-general', labels: 'linux-amd64-gpu-l4-latest-1'},
-  ];
-  if (!configured) console.log('Using shared GPU runner defaults: RTX PRO 6000 -> H100 -> A100 -> L4');
-  if (!Array.isArray(runners) || runners.length < 1 || runners.length > 4) {
-    throw new Error('runners must contain one to four candidates');
+  const runners = configured ? JSON.parse(configured) : defaultRunners[type];
+  if (!Array.isArray(runners) || runners.length < 1 || runners.length > 6) {
+    throw new Error('runners must contain one to six candidates');
   }
   let shape;
   const seen = new Set();
@@ -65,6 +91,12 @@ function candidates() {
     if (seen.has(runner.labels)) throw new Error('Duplicate runner candidate');
     seen.add(runner.labels);
   }
+  const [, architecture, family, count] = shape.split(':');
+  const actualType = `${family}-${architecture}${family === 'gpu' && count !== '1' ? `-${count}gpu` : ''}`;
+  if (actualType !== type) {
+    throw new Error(`runners must match runner-type ${type}: CPU/GPU family, architecture and GPU count`);
+  }
+  console.log(`Using ${configured ? 'explicit runners' : 'shared defaults'} for ${type}: ${runners.map(runner => runner.labels).join(' -> ')}`);
   return runners;
 }
 
