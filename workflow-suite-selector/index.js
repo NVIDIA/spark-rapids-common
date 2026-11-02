@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+const {posix: {matchesGlob}} = require('node:path');
+
 const validJob = job => typeof job === 'string' && /^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(job);
 
 function selectSuites(files, config) {
@@ -20,22 +22,28 @@ function selectSuites(files, config) {
     (file.previous_filename !== undefined && typeof file.previous_filename !== 'string'))) {
     throw new Error('Invalid PR file metadata');
   }
-  const validPaths = paths => Array.isArray(paths) && paths.length > 0 &&
+  const validPaths = (paths, globs = false) => Array.isArray(paths) &&
     paths.every(path => typeof path === 'string' && path.length > 0 &&
-      !path.startsWith('/') && !path.includes('..') && !/[?*\\]/.test(path));
-  if (!config || !validPaths(config.shared_paths) || !config.suites ||
+      !path.startsWith('/') && !path.startsWith('!') && !path.includes('..') &&
+      !path.includes('\\') && (globs || !/[?*]/.test(path)));
+  const sharedPaths = config?.shared_paths === undefined ? [] : config.shared_paths;
+  if (!config || !validPaths(sharedPaths) || !config.suites ||
       typeof config.suites !== 'object' || Array.isArray(config.suites) ||
       Object.keys(config.suites).length === 0) {
     throw new Error('Invalid suite catalog');
   }
   const changed = files.flatMap(file => [file.filename, file.previous_filename].filter(Boolean));
-  const matches = paths => paths.some(path => changed.some(file =>
-    path.endsWith('/') ? file.startsWith(path) : file === path));
+  const matches = (file, path) => path.endsWith('/') ? file.startsWith(path) : file === path;
+  const shared = changed.some(file => sharedPaths.some(path => matches(file, path)));
   return Object.entries(config.suites).filter(([name, suite]) => {
-    if (!/^[a-z][a-z0-9-]*$/.test(name) || !suite || !validPaths(suite.paths) ||
+    if (!/^[a-z][a-z0-9-]*$/.test(name) || !suite ||
+        (suite.paths !== undefined && (!validPaths(suite.paths) || suite.paths.length === 0)) ||
         !Array.isArray(suite.jobs) || suite.jobs.length === 0 ||
         !suite.jobs.every(validJob) || new Set(suite.jobs).size !== suite.jobs.length) {
       throw new Error(`Invalid suite: ${name}`);
+    }
+    if (suite.exclude_paths !== undefined && !validPaths(suite.exclude_paths, true)) {
+      throw new Error(`Suite ${name}: exclude_paths must be an array of relative paths or glob patterns`);
     }
     if (suite.enabled !== undefined && typeof suite.enabled !== 'boolean') {
       throw new Error(`Suite ${name}: enabled must be a boolean`);
@@ -46,7 +54,11 @@ function selectSuites(files, config) {
     if (suite.enabled === false && !suite.comment?.trim()) {
       throw new Error(`Suite ${name}: disabling a suite requires a nonempty comment`);
     }
-    return suite.enabled !== false && (matches(config.shared_paths) || matches(suite.paths));
+    // Filter each path, not the whole PR; shared changes and either side of a rename still count.
+    return suite.enabled !== false && (shared || changed.some(file =>
+      (suite.paths === undefined || suite.paths.some(path => matches(file, path))) &&
+      !suite.exclude_paths?.some(path => matches(file, path) ||
+        matchesGlob(file, path.endsWith('/') ? `${path}**` : path))));
   }).map(([name]) => name);
 }
 

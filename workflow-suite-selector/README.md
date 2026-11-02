@@ -22,17 +22,39 @@ Keep the path catalog in the consumer repository, for example `.github/ci-suites
   "suites": {
     "unit": {
       "enabled": true,
-      "comment": "Unit tests for source changes.",
-      "paths": ["src/"],
+      "comment": "Test all changes except documentation.",
+      "exclude_paths": ["docs/", "**/*.md"],
       "jobs": ["build", "test"]
     }
   }
 }
 ```
 
-Paths are exact filenames or directory prefixes ending in `/`, not globs.
-Changed files matching `shared_paths` select every enabled suite, so list paths that affect all workloads.
-The catalog itself is not automatically a trigger. Renames check both old and new paths.
+Omit a suite's `paths` to include **all changed files**, including hidden files.
+To limit it to a subtree instead, set `"paths": ["src/"]`. Include paths and
+`shared_paths` remain exact filenames or directory prefixes ending in `/`, not globs.
+An empty `paths` list is invalid; use `enabled: false` to pause a suite.
+
+Optional `exclude_paths` filters individual files for that suite:
+
+- `docs/` excludes that directory and its contents.
+- `LICENSE` excludes one exact file.
+- `**/*.md` excludes Markdown files at the root and in non-hidden directories.
+- `**/*.{png,jpg}` excludes those file types.
+
+Globs use Node.js `path.matchesGlob`. Wildcards do not match hidden path segments;
+use an explicit exclusion such as `.github/` or `.github/**/*.md` when needed.
+Glob case sensitivity follows the coordinator OS (case-sensitive on Linux).
+Patterns must be repository-relative, without `..`, backslashes or a leading `!`.
+Omitting `exclude_paths` or using `[]` excludes nothing. Code plus excluded docs
+still selects the suite; only changes entirely excluded from its included paths skip it.
+
+Changed files matching `shared_paths` select every enabled suite **even if excluded**,
+so list only paths that affect all workloads. `shared_paths` may be omitted or `[]`.
+Renames check both old and new paths independently, so moving code into an excluded
+directory still selects the suite. File deletions are matched normally.
+The catalog is not implicitly shared: it triggers a suite only when covered by its
+include/exclude rules or explicitly listed in `shared_paths`.
 
 `jobs` lists existing workflow job IDs, not display names or runner types. When a
 suite is selected, every listed job must succeed for the final gate to pass. This
