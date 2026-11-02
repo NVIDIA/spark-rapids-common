@@ -1,0 +1,63 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Workflow suite selector
+description: Select required jobs from the full PR diff for an approved copied-branch push
+# Checkout the approved source first; grant contents: read and pull-requests: read.
+# The caller owns approval and the catalog: shared_paths affect every suite,
+# suites.<name>.paths select that suite, and suites.<name>.jobs lists required jobs.
+# Paths are exact files or directory prefixes ending in /, not glob patterns.
+# Pass required-jobs to workflow-result-gate; include this selector in gate.needs.
+inputs:
+  catalog-path:
+    description: JSON suite catalog path relative to the checked-out workspace
+    required: true
+  base-branch:
+    description: Only accept PRs targeting this branch
+    required: true
+  selector-job:
+    description: Caller job ID for this selector, always included in required-jobs
+    required: true
+  github-token:
+    description: Token with read access to PR metadata and files
+    default: ${{ github.token }}
+outputs:
+  suites:
+    description: JSON array of selected suite names
+    value: ${{ steps.select.outputs.suites }}
+  required-jobs:
+    description: JSON array containing the selector and selected workload job IDs
+    value: ${{ steps.select.outputs.required-jobs }}
+runs:
+  using: composite
+  steps:
+    - name: Select suites from the full PR diff
+      id: select
+      uses: actions/github-script@v8
+      env:
+        SUITE_SELECTOR_ACTION_PATH: ${{ github.action_path }}
+        SUITE_SELECTOR_CATALOG_PATH: ${{ inputs.catalog-path }}
+        SUITE_SELECTOR_BASE_BRANCH: ${{ inputs.base-branch }}
+        SUITE_SELECTOR_JOB: ${{ inputs.selector-job }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const {select} = require(path.join(process.env.SUITE_SELECTOR_ACTION_PATH, 'index.js'));
+          const catalog = JSON.parse(fs.readFileSync(path.resolve(
+            process.env.GITHUB_WORKSPACE, process.env.SUITE_SELECTOR_CATALOG_PATH), 'utf8'));
+          await select({github, context, core, catalog,
+            baseBranch: process.env.SUITE_SELECTOR_BASE_BRANCH,
+            selectorJob: process.env.SUITE_SELECTOR_JOB});
