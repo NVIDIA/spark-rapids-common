@@ -10,7 +10,7 @@
     "image-tooling": {
       "enabled": true,
       "comment": "Toolchain selection and image publication tests with mocked Docker; no registry access.",
-      "paths": ["resolve-toolchains/", "container-image/"],
+      "paths": ["resolve-toolchain-config/", "container-image/"],
       "exclude_paths": ["**/*.md"],
       "jobs": ["image-tooling"]
     },

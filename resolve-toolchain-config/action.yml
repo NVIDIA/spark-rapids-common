@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Resolve toolchains
-description: Select project-version requirements, optionally allowing an explicit default
+name: Resolve toolchain config
+description: Select project-version toolchain configuration and return JSON, optionally allowing an explicit default
 inputs:
   config:
     description: JSON mapping version keys to toolchain maps

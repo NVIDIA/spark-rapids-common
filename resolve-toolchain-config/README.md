@@ -1,6 +1,7 @@
-# Resolve Toolchains
+# Resolve Toolchain Config
 
-Select one project's requirements from a shared JSON file. An exact version
+Select one project's requirements from a shared JSON file and return the selected
+configuration as JSON, without installing tools or running builds. An exact version
 entry always wins. Missing versions may use `default` only when the caller
 explicitly allows it; malformed explicit entries never fall back.
 
@@ -17,7 +18,7 @@ Outputs: `toolchains` (JSON map), `selected-key`.
 No token or network access is required; check out the consumer configuration first.
 
 ~~~yaml
-- uses: NVIDIA/spark-rapids-common/resolve-toolchains@main
+- uses: NVIDIA/spark-rapids-common/resolve-toolchain-config@main
   id: toolchains
   with:
     config: ci/toolchains.json
@@ -32,5 +33,5 @@ branch policy, approval and build commands belong to the caller.
 
 ## Tests
 
-Run `node --test resolve-toolchains/test/*.test.js` with Node.js 24.
+Run `node --test resolve-toolchain-config/test/*.test.js` with Node.js 24.
 Tests cover selection, invalid input, CLI outputs and escaped error annotations.

@@ -28,7 +28,7 @@ const config = {
 };
 
 function run(t, options = {}) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'resolve-toolchains-'));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'resolve-toolchain-config-'));
   t.after(() => fs.rmSync(directory, {recursive: true, force: true}));
   const file = path.join(directory, 'toolchains.json');
   const output = path.join(directory, 'output');

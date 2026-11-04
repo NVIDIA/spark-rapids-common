@@ -75,7 +75,7 @@ jobs:
           node-version: '24'
           package-manager-cache: false
       - name: Test toolchain selection and image publication without registry access
-        run: node --test resolve-toolchains/test/*.test.js container-image/test/*.test.js
+        run: node --test resolve-toolchain-config/test/*.test.js container-image/test/*.test.js
 
   runner-fallback:
     name: Runner fallback tests
