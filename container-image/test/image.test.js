@@ -64,10 +64,19 @@ function fixture(t) {
   };
   return {
     root, caller, config, env, original,
-    run(overrides = {}) {
-      const result = spawnSync('bash', [path.join(__dirname, '../image.sh')], {
+    run(overrides = {}, {entrypoint = 'action'} = {}) {
+      const environment = {...env, IMAGE_CONFIG: JSON.stringify(config), PUBLISH_IMAGE: 'true', ...overrides};
+      if (entrypoint === 'action') {
+        environment.INPUT_CONFIG = environment.IMAGE_CONFIG;
+        environment.INPUT_PUBLISH = environment.PUBLISH_IMAGE;
+        environment.INPUT_TOKEN = environment.GHCR_TOKEN;
+        environment.GITHUB_ACTOR = environment.GHCR_USER;
+        for (const key of ['IMAGE_CONFIG', 'PUBLISH_IMAGE', 'GHCR_TOKEN', 'GHCR_USER']) delete environment[key];
+      }
+      const result = spawnSync(entrypoint === 'action' ? process.execPath : 'bash',
+        [path.join(__dirname, entrypoint === 'action' ? '../index.js' : '../image.sh')], {
         cwd: root, encoding: 'utf8', timeout: 15000,
-        env: {...env, IMAGE_CONFIG: JSON.stringify(config), PUBLISH_IMAGE: 'true', ...overrides},
+        env: environment,
       });
       assert.ifError(result.error);
       const events = fs.existsSync(env.MOCK_EVENTS) ?
@@ -96,6 +105,9 @@ test('publication isolates credentials and promotes the verified digest after ev
   assert.equal(promotions(result).length, 1);
   assert.equal(result.docker.at(-1), promotions(result)[0]);
   assert.ok(builds(result)[0].args.includes('--push'));
+  assert.ok(builds(result)[0].args.includes('--no-cache'));
+  assert.ok(!builds(result)[0].args.includes('--cache-from'));
+  assert.ok(!builds(result)[0].args.includes('--cache-to'));
   assert.ok(builds(result)[0].args.includes('TEXT=first line\nsecond line'));
   assert.ok(builds(result)[0].args.includes('COUNT=8'));
   assert.ok(builds(result)[0].args.includes('FLAG=false'));
@@ -201,5 +213,87 @@ test('invalid configuration fails before invoking Docker', t => {
   f.config.platforms = ['linux/amd64', 'linux/amd64'];
   const result = f.run();
   assert.notEqual(result.status, 0);
+  assert.equal(result.events.length, 0);
+});
+
+test('validation forwards every cache option without splitting its value', t => {
+  const f = fixture(t);
+  f.config['cache-from'] = ['type=gha,version=2,scope=toolchain,timeout=2m',
+    'type=local,src=/tmp/cache with spaces'];
+  f.config['cache-to'] = ['type=gha,version=2,scope=toolchain,timeout=2m,ignore-error=true'];
+  const result = f.run({PUBLISH_IMAGE: 'false'});
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(builds(result).length, 2);
+  for (const build of builds(result)) {
+    for (const option of ['cache-from', 'cache-to']) {
+      assert.deepEqual(build.args.flatMap((argument, i) =>
+        argument === '--' + option ? [build.args[i + 1]] : []), f.config[option]);
+    }
+    assert.ok(!build.args.includes('--no-cache'));
+  }
+  assert.equal(promotions(result).length, 0);
+});
+
+test('publishing can export a baseline without enabling cached publication', t => {
+  const f = fixture(t);
+  f.config['cache-to'] = ['type=gha,version=2,scope=toolchain,timeout=2m,ignore-error=true'];
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(builds(result).length, 1);
+  assert.ok(builds(result)[0].args.includes('--no-cache'));
+  assert.ok(builds(result)[0].args.includes('--pull'));
+  assert.equal(builds(result)[0].args[builds(result)[0].args.indexOf('--cache-to') + 1],
+    f.config['cache-to'][0]);
+  assert.equal(promotions(result).length, 1);
+});
+
+test('action passes cache runtime credentials without writing job-wide environment', t => {
+  const f = fixture(t);
+  f.config['cache-from'] = ['type=gha,version=2,scope=toolchain,timeout=2m'];
+  const githubEnv = path.join(f.root, 'github-env');
+  fs.writeFileSync(githubEnv, 'EXISTING=value\n');
+  const result = f.run({PUBLISH_IMAGE: 'false', GITHUB_ENV: githubEnv,
+    ACTIONS_RUNTIME_TOKEN: 'test-runtime-token', ACTIONS_RESULTS_URL: 'https://cache.example.test'});
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(builds(result).every(e => e.hasRuntimeToken && e.resultsUrl === 'https://cache.example.test'));
+  assert.equal(fs.readFileSync(githubEnv, 'utf8'), 'EXISTING=value\n');
+  assert.ok(!result.stdout.includes('test-runtime-token'));
+  assert.ok(!result.stderr.includes('test-runtime-token'));
+});
+
+test('invalid cache settings fail before Docker runs', t => {
+  const f = fixture(t);
+  for (const option of ['cache-from', 'cache-to']) {
+    for (const invalid of ['type=gha', false, true, {}, [42], [''], [' '], ['type=gha\n'], ['type=gha\u0000'], ['type=gha\u007f']]) {
+      const result = f.run({IMAGE_CONFIG: JSON.stringify({...f.config, [option]: invalid})});
+      assert.notEqual(result.status, 0);
+      assert.equal(result.events.length, 0);
+    }
+  }
+});
+
+test('cache-enabled build failure stays single-shot and never promotes', t => {
+  const f = fixture(t);
+  f.config['cache-from'] = ['type=gha,version=2,scope=toolchain,timeout=2m'];
+  const result = f.run({MOCK_FAILURE: 'build'});
+  assert.equal(result.status, 42);
+  assert.equal(builds(result).length, 1);
+  assert.equal(promotions(result).length, 0);
+});
+
+for (const publish of ['false', 'true']) {
+  test('standalone shell entry point remains compatible: publish=' + publish, t => {
+    const result = fixture(t).run({PUBLISH_IMAGE: publish}, {entrypoint: 'shell'});
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(builds(result).length, publish === 'true' ? 1 : 2);
+    assert.equal(promotions(result).length, publish === 'true' ? 1 : 0);
+  });
+}
+
+test('missing Bash reports an actionable entry-point error', t => {
+  const f = fixture(t);
+  const result = f.run({PATH: path.join(f.root, 'bin')});
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Ensure Bash is available on PATH/);
   assert.equal(result.events.length, 0);
 });

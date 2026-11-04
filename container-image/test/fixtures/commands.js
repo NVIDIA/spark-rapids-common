@@ -32,6 +32,8 @@ if (command === 'docker') {
   event.buildx = process.env.BUILDX_CONFIG;
   event.certs = process.env.DOCKER_CERT_PATH;
   event.authOverride = process.env.DOCKER_AUTH_CONFIG ?? null;
+  event.hasRuntimeToken = Boolean(process.env.ACTIONS_RUNTIME_TOKEN);
+  event.resultsUrl = process.env.ACTIONS_RESULTS_URL;
   event.contexts = fs.realpathSync(path.join(event.directory, 'contexts'));
   event.plugins = fs.realpathSync(path.join(event.directory, 'cli-plugins'));
 }

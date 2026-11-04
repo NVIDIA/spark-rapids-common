@@ -25,13 +25,5 @@ inputs:
     description: GHCR token with packages write permission; required only for publication
     default: ''
 runs:
-  using: composite
-  steps:
-    - name: Build and verify image
-      shell: bash
-      env:
-        IMAGE_CONFIG: ${{ inputs.config }}
-        PUBLISH_IMAGE: ${{ inputs.publish }}
-        GHCR_TOKEN: ${{ inputs.token }}
-        GHCR_USER: ${{ github.actor }}
-      run: bash "$GITHUB_ACTION_PATH/image.sh"
+  using: node24
+  main: index.js

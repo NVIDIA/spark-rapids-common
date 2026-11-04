@@ -26,7 +26,10 @@ jq -e '
     all(.[]; (type == "string" or type == "number" or type == "boolean") and
       (tostring | contains("\u0000") | not))) and
   ((."smoke-args" // []) | type == "array" and
-    all(.[]; type == "string" and (contains("\u0000") | not)))
+    all(.[]; type == "string" and (contains("\u0000") | not))) and
+  ([."cache-from", ."cache-to"] |
+    all(. == null or (type == "array" and all(.[]; type == "string" and
+      test("\\S") and (explode | all(. >= 32 and . != 127))))))
 ' <<< "$IMAGE_CONFIG" >/dev/null
 image=$(jq -r '.image' <<< "$IMAGE_CONFIG")
 tag=$(jq -r '.tag' <<< "$IMAGE_CONFIG")
@@ -51,6 +54,11 @@ while IFS= read -r -d '' argument; do smoke_args+=("$argument"); done \
   < <(jq -j '."smoke-args" // [] | .[] | ., "\u0000"' <<< "$IMAGE_CONFIG")
 build_options=(--pull --file "$dockerfile" "${build_args[@]}"
   --label "org.opencontainers.image.version=$version")
+for cache_option in cache-from cache-to; do
+  while IFS= read -r -d '' cache; do
+    build_options+=("--$cache_option" "$cache")
+  done < <(jq -j --arg option "$cache_option" '.[$option] // [] | .[] | ., "\u0000"' <<< "$IMAGE_CONFIG")
+done
 
 if [[ "$publish" == false ]]; then
   reference="image-validation:$tag"

@@ -42,6 +42,36 @@ jq and timeout. Multiple platforms require native support or caller-configured
 emulation. Validation builds/loads platforms sequentially; publication builds a
 multi-platform candidate once.
 
+## Optional Build Cache
+
+`cache-from` and `cache-to` are optional arrays of Buildx cache specifications.
+Omitting them preserves the existing behavior without external cache configuration.
+For example:
+
+~~~json
+{
+  "cache-from": ["type=gha,version=2,scope=toolchain-cuda12-amd64,timeout=2m"],
+  "cache-to": ["type=gha,version=2,scope=toolchain-cuda12-amd64,mode=max,timeout=2m,ignore-error=true"]
+}
+~~~
+
+Add these fields to the image config above. Give independent image variants
+separate scopes to avoid overwriting each other's cache. Validation builds can
+reuse cached layers; publishing still uses `--pull --no-cache` and can export a
+fresh baseline for subsequent PR builds. Multiple validation platforms build
+sequentially; use separate per-platform calls/scopes when exporting their caches.
+
+Use bounded timeouts and `ignore-error=true` for optional cache exports. The action
+does not retry builds or publications after cache or workload failures. GitHub's
+branch-scoped cache access rules apply; PR caches must not be used as trusted
+publication inputs. No additional registry credentials are needed for `type=gha`.
+The Node.js 24 entry point passes GitHub's cache runtime credentials directly to
+the existing shell builder, without writing them to job-wide environment files.
+Calling `image.sh` directly still works; standalone callers using GHA caches must
+supply the cache runtime environment themselves. See the
+[Docker GHA cache requirements](https://docs.docker.com/build/cache/backends/gha/),
+including driver compatibility and runtime authentication.
+
 ## Publication Boundary
 
 Only set `publish: 'true'` in a trusted worker, passing its scoped GitHub token.
@@ -66,5 +96,5 @@ anonymous pulls do not replace a clean-consumer download/performance check.
 ## Tests
 
 Run `node --test container-image/test/*.test.js` with Node.js 24, Bash 4+
-and jq. The tests execute the shell entry point with fake Docker/clock commands;
+and jq. The tests execute both action and shell entry points with fake Docker/clock commands;
 they need no Docker daemon, registry credentials or network access.
