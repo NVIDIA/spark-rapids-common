@@ -29,3 +29,8 @@ For copied PR branches, derive the target branch from validated PR metadata,
 not from the copied branch name. Allow the default only for main-target PRs.
 Release publication should require explicit requirements. Version-key extraction,
 branch policy, approval and build commands belong to the caller.
+
+## Tests
+
+Run `node --test resolve-toolchains/test/*.test.js` with Node.js 24.
+Tests cover selection, invalid input, CLI outputs and escaped error annotations.

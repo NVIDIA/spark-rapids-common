@@ -57,6 +57,26 @@ jobs:
           base-branch: main
           selector-job: select
 
+  image-tooling:
+    name: Image tooling tests
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.suites), 'image-tooling')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout PR merge commit
+        uses: NVIDIA/spark-rapids-common/checkout@main
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Test toolchain selection and image publication without registry access
+        run: node --test resolve-toolchains/test/*.test.js container-image/test/*.test.js
+
   runner-fallback:
     name: Runner fallback tests
     needs: select
@@ -114,7 +134,7 @@ jobs:
   gate:
     name: CPU CI gate
     if: always()
-    needs: [select, runner-fallback, shimpler, spark-home]
+    needs: [select, image-tooling, runner-fallback, shimpler, spark-home]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

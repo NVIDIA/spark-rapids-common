@@ -62,3 +62,9 @@ Read retries are bounded to three 300-second attempts per platform with
 15-second waits. Build, push and smoke failures are not retried. Reserve enough
 time in the caller's worker for publication and verification. Publisher-local
 anonymous pulls do not replace a clean-consumer download/performance check.
+
+## Tests
+
+Run `node --test container-image/test/*.test.js` with Node.js 24, Bash 4+
+and jq. The tests execute the shell entry point with fake Docker/clock commands;
+they need no Docker daemon, registry credentials or network access.
