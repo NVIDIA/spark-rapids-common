@@ -61,8 +61,13 @@ reuse cached layers; publishing still uses `--pull --no-cache` and can export a
 fresh baseline for subsequent PR builds. Multiple validation platforms build
 sequentially; use separate per-platform calls/scopes when exporting their caches.
 
-Use bounded timeouts and `ignore-error=true` for optional cache exports. The action
-does not retry builds or publications after cache or workload failures. GitHub's
+Unavailable import metadata is a cache miss in BuildKit. The action enforces
+`ignore-error=true` on every export, including when a caller sets it to `false`,
+so cache-service export failures do not fail an otherwise successful build.
+Use bounded backend timeouts (for example, `timeout=2m` for GHA caches).
+Invalid cache configuration or an unsupported builder still needs fixing; these
+are setup errors, not cache misses. The action never retries a build or push to
+hide a workload failure. GitHub's
 branch-scoped cache access rules apply; PR caches must not be used as trusted
 publication inputs. No additional registry credentials are needed for `type=gha`.
 The Node.js 24 entry point passes GitHub's cache runtime credentials directly to
@@ -71,6 +76,20 @@ Calling `image.sh` directly still works; standalone callers using GHA caches mus
 supply the cache runtime environment themselves. See the
 [Docker GHA cache requirements](https://docs.docker.com/build/cache/backends/gha/),
 including driver compatibility and runtime authentication.
+
+## Daily Image Catalog
+
+The repository's [daily publisher](../.github/workflows/image-build.yml) uses this
+action directly on `ubuntu-latest`, without a CPU-pool queue. The main-only daily
+schedule and manual trigger publish the [image catalog](../.github/image-builds.json),
+one image at a time. Only publishing jobs receive `packages: write`.
+
+Each catalog key supplies the `image` name; its value supplies the remaining
+configuration. Adding another image does not require image-specific workflow code.
+The signoff image retains its `v1` tag, amd64/arm64 platforms and smoke checks.
+QEMU handles arm64 on the hosted x86 runner. No external cache is configured for
+this small daily image. The legacy dispatched image worker remains available for
+existing callers, but is no longer used by the daily workflow.
 
 ## Parallel Builds
 

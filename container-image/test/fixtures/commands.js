@@ -48,6 +48,17 @@ if (command === 'sleep') {
   process.exit(result.status ?? 91);
 } else if (command === 'docker' && args[0] === 'buildx' && args[1] === 'build') {
   if (failure === 'build') process.exit(42);
+  if (failure === 'cache-import') {
+    // BuildKit reports unavailable metadata but proceeds without that cache.
+    console.error('ERROR: failed to configure registry cache importer: connection refused');
+  }
+  if (failure === 'cache-export') {
+    const exporters = args.flatMap((arg, i) => arg === '--cache-to' ? [args[i + 1]] : []);
+    console.error('ERROR: cache service unavailable during export');
+    if (!exporters.length || exporters.some(value => !value.endsWith(',ignore-error=true'))) {
+      process.exit(46);
+    }
+  }
   if (args.includes('--metadata-file') && failure !== 'missing-metadata') {
     const digest = failure === 'bad-digest' ? 'invalid' : 'sha256:' + 'a'.repeat(64);
     fs.writeFileSync(option('--metadata-file'), JSON.stringify({'containerimage.digest': digest}));

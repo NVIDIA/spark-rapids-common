@@ -247,7 +247,8 @@ test('validation forwards every cache option without splitting its value', t => 
   for (const build of builds(result)) {
     for (const option of ['cache-from', 'cache-to']) {
       assert.deepEqual(build.args.flatMap((argument, i) =>
-        argument === '--' + option ? [build.args[i + 1]] : []), f.config[option]);
+        argument === '--' + option ? [build.args[i + 1]] : []),
+      f.config[option].map(value => option === 'cache-to' ? value + ',ignore-error=true' : value));
     }
     assert.ok(!build.args.includes('--no-cache'));
   }
@@ -263,7 +264,7 @@ test('publishing can export a baseline without enabling cached publication', t =
   assert.ok(builds(result)[0].args.includes('--no-cache'));
   assert.ok(builds(result)[0].args.includes('--pull'));
   assert.equal(builds(result)[0].args[builds(result)[0].args.indexOf('--cache-to') + 1],
-    f.config['cache-to'][0]);
+    f.config['cache-to'][0] + ',ignore-error=true');
   assert.equal(promotions(result).length, 1);
 });
 
@@ -292,13 +293,57 @@ test('invalid cache settings fail before Docker runs', t => {
   }
 });
 
-test('cache-enabled build failure stays single-shot and never promotes', t => {
-  const f = fixture(t);
-  f.config['cache-from'] = ['type=gha,version=2,scope=toolchain,timeout=2m'];
-  const result = f.run({MOCK_FAILURE: 'build'});
-  assert.equal(result.status, 42);
-  assert.equal(builds(result).length, 1);
-  assert.equal(promotions(result).length, 0);
+for (const failure of ['cache-import', 'cache-export']) {
+  for (const publish of ['false', 'true']) {
+    test(`${failure} does not fail the build or skip smoke checks: publish=${publish}`, t => {
+      const f = fixture(t);
+      f.config['cache-from'] = ['type=gha,version=2,scope=toolchain,timeout=2m'];
+      f.config['cache-to'] = ['type=gha,version=2,scope=toolchain,timeout=2m,ignore-error=false',
+        'ghcr.io/example/consumer/cache:baseline'];
+      const result = f.run({MOCK_FAILURE: failure, PUBLISH_IMAGE: publish});
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(builds(result).length, publish === 'true' ? 1 : 2);
+      assert.equal(smokes(result).length, 2);
+      assert.equal(promotions(result).length, publish === 'true' ? 1 : 0);
+      assert.match(result.stdout, /Build, push and smoke failures remain fatal/);
+      for (const build of builds(result)) {
+        assert.ok(build.args.includes('type=registry,ref=ghcr.io/example/consumer/cache:baseline,ignore-error=true'));
+        assert.ok(build.args.includes(f.config['cache-to'][0] + ',ignore-error=true'));
+      }
+    });
+  }
+}
+
+for (const failure of ['build', 'missing-metadata', 'bad-digest', 'pull-arm64', 'smoke-arm64', 'promotion']) {
+  test(`cache-enabled ${failure} stays fatal without rebuilding or republishing`, t => {
+    const f = fixture(t);
+    f.config['cache-from'] = ['type=gha,version=2,scope=toolchain,timeout=2m'];
+    f.config['cache-to'] = ['type=gha,version=2,scope=toolchain,timeout=2m'];
+    const result = f.run({MOCK_FAILURE: failure});
+    assert.notEqual(result.status, 0);
+    assert.equal(builds(result).length, 1);
+    assert.equal(promotions(result).length, failure === 'promotion' ? 1 : 0);
+    assert.doesNotMatch(result.summary, /Published/);
+  });
+}
+
+test('daily image catalog works through the shared publisher without queue dispatch', t => {
+  const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, '../../.github/image-builds.json')));
+  for (const [image, entry] of Object.entries(catalog)) {
+    const f = fixture(t);
+    for (const file of [entry.dockerfile, entry['smoke-test']]) {
+      fs.mkdirSync(path.dirname(path.join(f.root, file)), {recursive: true});
+    }
+    fs.copyFileSync(path.join(f.root, 'Dockerfile'), path.join(f.root, entry.dockerfile));
+    fs.copyFileSync(path.join(f.root, 'smoke.sh'), path.join(f.root, entry['smoke-test']));
+    const result = f.run({IMAGE_CONFIG: JSON.stringify({...entry, image})});
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(builds(result).length, 1);
+    assert.equal(smokes(result).length, entry.platforms.length);
+    assert.equal(promotions(result)[0].args.at(-2), `ghcr.io/example/consumer/${image}:${entry.tag}`);
+    assert.ok(!builds(result)[0].args.includes('--cache-from'));
+    assert.ok(!builds(result)[0].args.includes('--cache-to'));
+  }
 });
 
 for (const publish of ['false', 'true']) {

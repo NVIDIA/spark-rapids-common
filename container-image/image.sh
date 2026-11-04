@@ -56,9 +56,17 @@ build_options=(--pull --file "$dockerfile" "${build_args[@]}"
   --label "org.opencontainers.image.version=$version")
 for cache_option in cache-from cache-to; do
   while IFS= read -r -d '' cache; do
+    if [[ "$cache_option" == cache-to ]]; then
+      # Buildx accepts a bare registry ref too. Last duplicate attribute wins.
+      [[ "$cache" == *=* ]] || cache="type=registry,ref=$cache"
+      cache+=",ignore-error=true"
+    fi
     build_options+=("--$cache_option" "$cache")
   done < <(jq -j --arg option "$cache_option" '.[$option] // [] | .[] | ., "\u0000"' <<< "$IMAGE_CONFIG")
 done
+if jq -e '([."cache-from", ."cache-to"] | map(. // []) | add | length) > 0' <<< "$IMAGE_CONFIG" >/dev/null; then
+  echo 'Optional Buildx cache: unavailable import metadata is a cache miss; export errors are ignored. Build, push and smoke failures remain fatal.'
+fi
 
 if [[ "$publish" == false ]]; then
   reference="image-validation:$tag"
