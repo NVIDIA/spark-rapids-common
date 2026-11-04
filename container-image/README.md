@@ -72,6 +72,15 @@ supply the cache runtime environment themselves. See the
 [Docker GHA cache requirements](https://docs.docker.com/build/cache/backends/gha/),
 including driver compatibility and runtime authentication.
 
+## Parallel Builds
+
+Use separate matrix jobs with a small `strategy.max-parallel` limit (for example,
+two), one action invocation per job. Temporary publication tags are unique per
+invocation, including variants sharing one GHCR package and workflow run.
+Give variants distinct consumer tags and cache scopes. Serialize publishers that
+update the same consumer tag; this action does not provide a registry-wide lock.
+Platform smoke checks remain sequential within each invocation.
+
 ## Publication Boundary
 
 Only set `publish: 'true'` in a trusted worker, passing its scoped GitHub token.

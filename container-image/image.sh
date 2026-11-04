@@ -74,9 +74,10 @@ fi
 : "${GITHUB_REPOSITORY:?}" "${GITHUB_SHA:?}" "${GITHUB_RUN_ID:?}" "${GITHUB_RUN_ATTEMPT:?}"
 : "${GITHUB_SERVER_URL:?}" "${GHCR_TOKEN:?}" "${GHCR_USER:?}" "${GITHUB_STEP_SUMMARY:?}"
 image="ghcr.io/${GITHUB_REPOSITORY,,}/$image"
-candidate="$image:build-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
+# Matrix jobs share run identifiers; keep each invocation's candidate independent.
+candidate="$image:build-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${scratch##*/}"
 caller_config=${DOCKER_CONFIG:-"$HOME/.docker"}
 [[ "$caller_config" == /* ]] || caller_config="$PWD/$caller_config"
 config_file="$caller_config/config.json"

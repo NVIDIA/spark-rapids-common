@@ -149,6 +149,26 @@ test('explicit Buildx and TLS paths are preserved', t => {
   assert.ok(result.docker.every(e => e.buildx === '/custom/buildx' && e.certs === '/custom/certs'));
 });
 
+test('same-run image variants publish distinct candidates and promote only their own tag', t => {
+  const candidates = [];
+  for (const tag of ['cuda12', 'cuda13', 'v'.repeat(128)]) {
+    const f = fixture(t);
+    f.config.tag = tag;
+    const result = f.run();
+    assert.equal(result.status, 0, result.stderr);
+    const build = builds(result)[0].args;
+    const candidate = build[build.indexOf('--tag') + 1];
+    candidates.push(candidate);
+    assert.match(candidate, /^ghcr\.io\/example\/consumer\/toolchain:build-/);
+    assert.ok(candidate.split(':').at(-1).length <= 128);
+    assert.deepEqual(promotions(result)[0].args,
+      ['buildx', 'imagetools', 'create', '--prefer-index=false', '--tag',
+        `ghcr.io/example/consumer/toolchain:${tag}`, reference]);
+  }
+  assert.equal(new Set(candidates).size, candidates.length,
+    'matrix jobs share SHA/run/attempt, not candidate tags');
+});
+
 test('validation builds and checks each platform without credentials or registry operations', t => {
   const f = fixture(t);
   const result = f.run({PUBLISH_IMAGE: 'false', GHCR_USER: '', GHCR_TOKEN: ''});

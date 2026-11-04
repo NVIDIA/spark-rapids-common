@@ -13,7 +13,7 @@
 # limitations under the License.
 
 name: Runner queue fallback
-description: Dispatch one CPU or GPU job at a time, changing compatible pools only on queue timeout
+description: Acquire one CPU or GPU worker per invocation, changing compatible pools only on queue timeout
 inputs:
   github-token:
     description: Same-repository token with actions write and contents read permissions

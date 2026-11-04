@@ -130,6 +130,20 @@ matrix, `needs`, environment approvals, job-level conditional skips, or concurre
 queue: this workflow isolates exactly one worker allocation so cancelling it cannot
 cancel upstream builds or unrelated jobs. Do not rerun a child directly; rerun its parent.
 
+### Parallel workers
+
+Run independent coordinator invocations in a parent matrix with a small
+`strategy.max-parallel` limit, such as two, and `fail-fast: false` when independent
+results are required. Each invocation has a unique request ID and action-local
+cleanup state; it cancels only its own child. Pass a shard or task identifier in
+`workload` and keep output artifact names distinct. The child still contains one
+`worker` job, not a matrix. Candidate pools remain sequential within each invocation;
+racing pools would allocate duplicate workers for the same task.
+
+The parent matrix limit applies to that workflow run, not to all repositories or
+simultaneous runs. Keep workflow concurrency and final result gates in the caller;
+there is no shared task-claiming queue or cross-repository worker limit.
+
 ### Choosing CPU or GPU pools
 
 Consumers **must** set `runner-type`, even with an explicit `runners` override.
@@ -318,7 +332,8 @@ trigger are unchanged; rerun the parent, not the dispatched worker.
   per coordinator, plus dispatch/cleanup overhead. Each waiting round logs its number,
   child ID, observed status, elapsed time since dispatch and next polling interval;
   completion logs explicitly say polling has finished. Keep the example's single active
-  coordinator per repo initially; tokens share a repository API quota. Reads and cancellation honor
+  coordinator initially, or explicitly bound parallel coordinators as above; tokens
+  share a repository API quota. Reads and cancellation honor
   rate-limit reset/Retry-After headers with at most two retries of at most one minute
   each. Network/timeouts, malformed JSON, HTTP 408 and HTTP 5xx responses also get
   at most two retries for reads/cancellation, normally after 5s and 10s. Dispatch
