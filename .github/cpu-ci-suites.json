@@ -7,6 +7,13 @@
     "workflow-result-gate/action.yml"
   ],
   "suites": {
+    "image-tooling": {
+      "enabled": true,
+      "comment": "Toolchain selection and image publication tests with mocked Docker; no registry access.",
+      "paths": ["resolve-toolchain-config/", "container-image/"],
+      "exclude_paths": ["**/*.md"],
+      "jobs": ["image-tooling"]
+    },
     "runner-fallback": {
       "enabled": true,
       "comment": "CPU and GPU queue-controller tests with mocked APIs; no real dispatches.",

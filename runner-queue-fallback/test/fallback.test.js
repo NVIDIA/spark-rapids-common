@@ -52,6 +52,7 @@ function fixture(t, runners = gpuRunners) {
     INPUT_WORKFLOW: 'runner-worker.yml', 'INPUT_WORKFLOW-REF': 'main',
     'INPUT_SOURCE-REF': 'refs/pull/1/merge', 'INPUT_SOURCE-SHA': sourceSha,
     INPUT_RUNNERS: JSON.stringify(runners),
+    'INPUT_QUEUE-POLICY': 'standard',
     'INPUT_RUNNER-TYPE': `${family}-${architecture}${gpuCount && gpuCount !== '1' ? `-${gpuCount}gpu` : ''}`,
     INPUT_WORKLOAD: JSON.stringify({artifactRunId: 42, artifactName: 'build'}),
     'INPUT_QUEUE-TIMEOUT-MINUTES': '1', 'INPUT_EXECUTION-TIMEOUT-MINUTES': '1',
@@ -224,6 +225,15 @@ const expectedDefaults = {
   'cpu-amd64': [16, 8, 32].map(size => ({group: 'nv-cpu-general', labels: `linux-amd64-cpu${size}`})),
   'cpu-arm64': [16, 8, 32].map(size => ({group: 'nv-cpu-general', labels: `linux-arm64-cpu${size}`})),
 };
+const expectedExtendedDefaults = structuredClone(expectedDefaults);
+for (const [profile, label] of Object.entries({
+  'cpu-amd64': 'linux-amd64-cpu32',
+  'cpu-arm64': 'linux-arm64-cpu32',
+  'gpu-amd64': 'linux-amd64-gpu-rtxpro6000-latest-1',
+  'gpu-amd64-2gpu': 'linux-amd64-gpu-rtxpro6000-latest-2',
+})) {
+  expectedExtendedDefaults[profile].push(expectedDefaults[profile].find(runner => runner.labels === label));
+}
 for (const [type, runners] of Object.entries(expectedDefaults)) {
   test(`${type} defaults exhaust in order without architecture or GPU-count downgrade`, {timeout: 5000}, async t => {
     const f = fixture(t);
@@ -904,10 +914,112 @@ test('CPU workload failure does not retry on a larger CPU label', {timeout: 5000
   assert.match(f.errors.join('\n'), /no workload retry/);
 });
 
+test('explicit final re-wait honors its budget and strips policy from runs-on', {timeout: 5000}, async t => {
+  const runners = [...cpuRunners, {...cpuRunners[1], 'queue-timeout-minutes': 60}];
+  const f = fixture(t, runners);
+  const started = f.now;
+  assert.equal(await f.run(), 1);
+  assert.equal(f.now - started, (1 + 1 + 60) * 60000 + 3 * 15000);
+  assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)),
+    [...cpuRunners, cpuRunners[1]]);
+  assert.deepEqual(JSON.parse(f.outputs().runner), cpuRunners[1]);
+  assert.ok(f.logs.includes('Queue deadline for this candidate: 60 minutes'));
+  assert.deepEqual(f.events, [
+    'dispatch:100', 'cancel:100', 'completed:100:cancelled',
+    'dispatch:101', 'cancel:101', 'completed:101:cancelled',
+    'dispatch:102', 'cancel:102', 'completed:102:cancelled',
+  ]);
+});
+
+for (const [family, runners, duration] of [['cpu', cpuRunners, 10], ['gpu', gpuRunners, 15]]) {
+  test(family + ' extended omitted queue deadline uses its family default', {timeout: 5000}, async t => {
+    const f = fixture(t, [runners[0]]);
+    process.env['INPUT_QUEUE-POLICY'] = 'extended';
+    delete process.env['INPUT_QUEUE-TIMEOUT-MINUTES'];
+    const started = f.now;
+    assert.equal(await f.run(), 1);
+    assert.equal(f.now - started, duration * 60000 + 15000);
+  });
+}
+
+test('terminal re-wait never repeats an acquired failing worker', {timeout: 5000}, async t => {
+  const f = fixture(t, [cpuRunners[0], {...cpuRunners[0], 'queue-timeout-minutes': 60}]);
+  f.onDispatch = run => f.finish(run, 'failure');
+  assert.equal(await f.run(), 1);
+  assert.equal(f.runs.length, 1);
+  assert.match(f.errors.join('\n'), /no workload retry/);
+});
+
+test('terminal re-wait stops if queue cancellation races allocation', {timeout: 5000}, async t => {
+  const f = fixture(t, [cpuRunners[0], {...cpuRunners[0], 'queue-timeout-minutes': 60}]);
+  f.onCancel = run => { f.acquire(run); f.finish(run, 'cancelled'); };
+  assert.equal(await f.run(), 1);
+  assert.equal(f.runs.length, 1);
+  assert.match(f.errors.join('\n'), /raced execution|ambiguous outcome/);
+});
+
+for (const [type, regular, count] of [['cpu-amd64', 10, 3], ['cpu-arm64', 10, 3],
+  ['gpu-amd64', 15, 6], ['gpu-amd64-2gpu', 15, 3]]) {
+  test(type + ' defaults include the full final sixty-minute re-wait', {timeout: 5000}, async t => {
+    const f = fixture(t);
+    process.env['INPUT_RUNNER-TYPE'] = type;
+    process.env['INPUT_QUEUE-POLICY'] = 'extended';
+    delete process.env.INPUT_RUNNERS;
+    delete process.env['INPUT_QUEUE-TIMEOUT-MINUTES'];
+    const started = f.now;
+    assert.equal(await f.run(), 1);
+    assert.equal(f.runs.length, count + 1);
+    assert.equal(f.now - started, (regular * count + 60) * 60000 + (count + 1) * 15000);
+    assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)), expectedExtendedDefaults[type]);
+    assert.ok(f.runs.every(run => run.conclusion === 'cancelled'));
+  });
+}
+
+test('existing examples-style caller retains six fifteen-minute GPU queues', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  delete process.env.INPUT_RUNNERS;
+  delete process.env['INPUT_QUEUE-POLICY'];
+  process.env['INPUT_QUEUE-TIMEOUT-MINUTES'] = '15';
+  const started = f.now;
+  assert.equal(await f.run(), 1);
+  assert.equal(f.now - started, 6 * 15 * 60000 + 6 * 15000);
+  assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)), expectedDefaults['gpu-amd64']);
+});
+
+for (const type of ['cpu-amd64', 'gpu-amd64']) {
+  test(type + ' existing callers keep ten-minute omitted deadlines', {timeout: 5000}, async t => {
+    const f = fixture(t);
+    process.env['INPUT_RUNNER-TYPE'] = type;
+    delete process.env.INPUT_RUNNERS;
+    delete process.env['INPUT_QUEUE-POLICY'];
+    delete process.env['INPUT_QUEUE-TIMEOUT-MINUTES'];
+    const started = f.now;
+    assert.equal(await f.run(), 1);
+    const count = expectedDefaults[type].length;
+    assert.equal(f.now - started, count * (10 * 60000 + 15000));
+    assert.equal(f.runs.length, count);
+  });
+}
+
+test('extended policy does not append pools to explicit runner lists', {timeout: 5000}, async t => {
+  const f = fixture(t, cpuRunners);
+  process.env['INPUT_QUEUE-POLICY'] = 'extended';
+  assert.equal(await f.run(), 1);
+  assert.deepEqual(f.runs.map(run => JSON.parse(run.payload.inputs.runner)), cpuRunners);
+});
+
+test('unknown queue policy fails before dispatch', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  process.env['INPUT_QUEUE-POLICY'] = 'unknown';
+  assert.equal(await f.run(), 1);
+  assert.equal(f.requests.length, 0);
+  assert.match(f.errors.join('\n'), /queue-policy/);
+});
+
 const invalidRunners = [
-  ['empty list', [], /one to six candidates/],
-  ['null list', null, /one to six candidates/],
-  ['more than six candidates', [...cpuRunners, ...gpuRunners, ...cpuRunners], /one to six candidates/],
+  ['empty list', [], /one to seven candidates/],
+  ['null list', null, /one to seven candidates/],
+  ['more than seven candidates', [...cpuRunners, ...gpuRunners, ...gpuRunners], /one to seven candidates/],
   ['mixed CPU/GPU', [cpuRunners[0], gpuRunners[0]], /CPU\/GPU family/],
   ['mixed architectures', [cpuRunners[0], {group: 'nv-cpu-general', labels: 'linux-arm64-cpu32'}], /architecture/],
   ['mixed operating systems', [cpuRunners[0], {group: 'nv-cpu-general', labels: 'windows-amd64-cpu32'}], /OS/],
@@ -916,6 +1028,11 @@ const invalidRunners = [
   ['CPU label in GPU pool', [{group: 'nv-gpu-general', labels: 'linux-amd64-cpu16'}], /matching runner group/],
   ['different GPU counts', [gpuRunners[0], {group: 'nv-gpu-amd64-h100-2gpu', labels: 'linux-amd64-gpu-h100-latest-2'}], /GPU count/],
   ['duplicate labels', [cpuRunners[0], cpuRunners[0]], /Duplicate runner candidate/],
+  ['nonterminal repeat', [cpuRunners[0], {...cpuRunners[0], 'queue-timeout-minutes': 60}, cpuRunners[1]], /Duplicate runner candidate/],
+  ['zero candidate deadline', [{...cpuRunners[0], 'queue-timeout-minutes': 0}], /integer from 1 to 60/],
+  ['oversized candidate deadline', [{...cpuRunners[0], 'queue-timeout-minutes': 61}], /integer from 1 to 60/],
+  ['string candidate deadline', [{...cpuRunners[0], 'queue-timeout-minutes': '60'}], /integer from 1 to 60/],
+  ['fractional candidate deadline', [{...cpuRunners[0], 'queue-timeout-minutes': 1.5}], /integer from 1 to 60/],
   ['broad CPU label', [{group: 'nv-cpu-general', labels: 'linux-amd64'}], /specific NVIDIA CPU or GPU label/],
 ];
 for (const [name, runners, expectedError] of invalidRunners) {
