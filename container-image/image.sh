@@ -26,7 +26,10 @@ jq -e '
     all(.[]; (type == "string" or type == "number" or type == "boolean") and
       (tostring | contains("\u0000") | not))) and
   ((."smoke-args" // []) | type == "array" and
-    all(.[]; type == "string" and (contains("\u0000") | not)))
+    all(.[]; type == "string" and (contains("\u0000") | not))) and
+  ([."cache-from", ."cache-to"] |
+    all(. == null or (type == "array" and all(.[]; type == "string" and
+      test("\\S") and (explode | all(. >= 32 and . != 127))))))
 ' <<< "$IMAGE_CONFIG" >/dev/null
 image=$(jq -r '.image' <<< "$IMAGE_CONFIG")
 tag=$(jq -r '.tag' <<< "$IMAGE_CONFIG")
@@ -51,6 +54,19 @@ while IFS= read -r -d '' argument; do smoke_args+=("$argument"); done \
   < <(jq -j '."smoke-args" // [] | .[] | ., "\u0000"' <<< "$IMAGE_CONFIG")
 build_options=(--pull --file "$dockerfile" "${build_args[@]}"
   --label "org.opencontainers.image.version=$version")
+for cache_option in cache-from cache-to; do
+  while IFS= read -r -d '' cache; do
+    if [[ "$cache_option" == cache-to ]]; then
+      # Buildx accepts a bare registry ref too. Last duplicate attribute wins.
+      [[ "$cache" == *=* ]] || cache="type=registry,ref=$cache"
+      cache+=",ignore-error=true"
+    fi
+    build_options+=("--$cache_option" "$cache")
+  done < <(jq -j --arg option "$cache_option" '.[$option] // [] | .[] | ., "\u0000"' <<< "$IMAGE_CONFIG")
+done
+if jq -e '([."cache-from", ."cache-to"] | map(. // []) | add | length) > 0' <<< "$IMAGE_CONFIG" >/dev/null; then
+  echo 'Optional Buildx cache: unavailable import metadata is a cache miss; export errors are ignored. Build, push and smoke failures remain fatal.'
+fi
 
 if [[ "$publish" == false ]]; then
   reference="image-validation:$tag"
@@ -66,9 +82,10 @@ fi
 : "${GITHUB_REPOSITORY:?}" "${GITHUB_SHA:?}" "${GITHUB_RUN_ID:?}" "${GITHUB_RUN_ATTEMPT:?}"
 : "${GITHUB_SERVER_URL:?}" "${GHCR_TOKEN:?}" "${GHCR_USER:?}" "${GITHUB_STEP_SUMMARY:?}"
 image="ghcr.io/${GITHUB_REPOSITORY,,}/$image"
-candidate="$image:build-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
+# Matrix jobs share run identifiers; keep each invocation's candidate independent.
+candidate="$image:build-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${scratch##*/}"
 caller_config=${DOCKER_CONFIG:-"$HOME/.docker"}
 [[ "$caller_config" == /* ]] || caller_config="$PWD/$caller_config"
 config_file="$caller_config/config.json"

@@ -57,26 +57,35 @@ jobs:
       matrix:
         image: ${{ fromJSON(needs.configure.outputs.images) }}
     runs-on: ubuntu-latest
-    # Three 10-minute queues, a final 60-minute queue, one build, and API overhead.
-    timeout-minutes: 150
+    timeout-minutes: 30
     permissions:
       contents: read
-      actions: write
+      packages: write
     steps:
-      - name: Checkout trusted coordinator
+      - name: Checkout image source
         uses: NVIDIA/spark-rapids-common/checkout@main
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Build image with CPU queue fallback
-        uses: ./runner-queue-fallback
+      - name: Select image from the trusted catalog
+        id: image
+        shell: bash
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          config=$(jq -ce --arg name "$IMAGE_NAME" \
+            '.[$name] | select(type == "object") | . + {image: $name}' .github/image-builds.json)
+          printf 'config=%s\n' "$config" >> "$GITHUB_OUTPUT"
+      - name: Set up emulation
+        uses: docker/setup-qemu-action@v4.4.0
         with:
-          workflow: image-build-worker.yml
-          workflow-ref: main
-          source-ref: ${{ github.ref }}
-          source-sha: ${{ github.sha }}
-          workload: ${{ toJSON(matrix) }}
-          runner-type: cpu-amd64
-          queue-policy: extended
-          queue-timeout-minutes: '10'
-          execution-timeout-minutes: '30'
+          platforms: arm64
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.4.1
+      - name: Build, verify, and publish
+        uses: ./container-image
+        with:
+          config: ${{ steps.image.outputs.config }}
+          publish: 'true'
+          token: ${{ secrets.GITHUB_TOKEN }}

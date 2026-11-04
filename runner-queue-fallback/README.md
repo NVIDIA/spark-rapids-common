@@ -130,6 +130,20 @@ matrix, `needs`, environment approvals, job-level conditional skips, or concurre
 queue: this workflow isolates exactly one worker allocation so cancelling it cannot
 cancel upstream builds or unrelated jobs. Do not rerun a child directly; rerun its parent.
 
+### Parallel workers
+
+Run independent coordinator invocations in a parent matrix with a small
+`strategy.max-parallel` limit, such as two, and `fail-fast: false` when independent
+results are required. Each invocation has a unique request ID and action-local
+cleanup state; it cancels only its own child. Pass a shard or task identifier in
+`workload` and keep output artifact names distinct. The child still contains one
+`worker` job, not a matrix. Candidate pools remain sequential within each invocation;
+racing pools would allocate duplicate workers for the same task.
+
+The parent matrix limit applies to that workflow run, not to all repositories or
+simultaneous runs. Keep workflow concurrency and final result gates in the caller;
+there is no shared task-claiming queue or cross-repository worker limit.
+
 ### Choosing CPU or GPU pools
 
 Consumers **must** set `runner-type`, even with an explicit `runners` override.
@@ -218,38 +232,16 @@ turn required test failures into success. Public GHCR images need no registry lo
 
 ### Daily image build
 
-The repository's [daily image workflow](../.github/workflows/image-build.yml) reads
-its image matrix from the [image catalog](../.github/image-builds.json), currently
-containing the signoff image. It explicitly selects `runner-type: cpu-amd64`
-and `queue-policy: extended`, trying
-`linux-amd64-cpu16`, `cpu8`, then `cpu32`, all in `nv-cpu-general`, with a
-**10-minute queue timeout per candidate**, then `cpu32` again for up to 60 minutes.
-Only one managed worker runs at a time. Memory-optimized groups are not enabled for
-this repository, and ARM runners are intentionally excluded from this sequence.
+The repository's [daily image workflow](../.github/workflows/image-build.yml) now
+uses [container-image](../container-image/README.md#daily-image-catalog) directly
+on hosted `ubuntu-latest`, one image at a time. It no longer uses CPU queue
+fallback. Its main-only schedule, manual trigger, signoff `v1` tag and amd64/arm64
+checks are preserved.
 
-The [image worker](../.github/workflows/image-build-worker.yml) retains the existing
-30-minute build limit. It builds the configured platforms on the same x86 node
-using Buildx and QEMU, checks anonymous pulls and runs the image's smoke script,
-then promotes the verified digest to its configured tag. The signoff entry retains
-both `linux/amd64` and `linux/arm64`, its two CLI checks, and the `v1` tag.
-Emulated compilation is supported but may be
-much slower than native compilation; a future heavy build can use separate native
-architecture workers without relaxing the shared action's architecture checks.
-
-To add an image, add a catalog entry with its build context, Dockerfile, supported
-platforms (`linux/amd64` and/or `linux/arm64`), tag, and smoke-test script. The catalog
-key becomes `ghcr.io/<owner>/<repository>/<key>` (lowercase). No workflow edits are
-needed. The smoke script receives the immutable image reference and platform as
-its two arguments and must fail on a failed check. Image-specific checks belong
-beside that image, not in the generic worker. Only the image key is dispatched;
-the worker reads build paths, tags, and scripts from its trusted checkout, not from
-arbitrary dispatch inputs. The parent matrix is serialized to avoid flooding pools.
-
-Unlike a PR test worker, this is a trusted publishing workload: it checks out only
-the dispatch's `main` SHA, rejects any different source, and uses `packages: write`
-only in the worker. The hosted coordinator has no package-write permission. Do not
-reuse this privileged worker for PR code. The daily schedule and manual parent
-trigger are unchanged; rerun the parent, not the dispatched worker.
+The [legacy image worker](../.github/workflows/image-build-worker.yml) remains
+available for existing dispatch callers, with its source/parent guards and
+30-minute execution limit unchanged. Other consumers can still use CPU or GPU
+fallback with their own workers; their queues and policies are unaffected.
 
 ## Behavior and limits
 
@@ -318,7 +310,8 @@ trigger are unchanged; rerun the parent, not the dispatched worker.
   per coordinator, plus dispatch/cleanup overhead. Each waiting round logs its number,
   child ID, observed status, elapsed time since dispatch and next polling interval;
   completion logs explicitly say polling has finished. Keep the example's single active
-  coordinator per repo initially; tokens share a repository API quota. Reads and cancellation honor
+  coordinator initially, or explicitly bound parallel coordinators as above; tokens
+  share a repository API quota. Reads and cancellation honor
   rate-limit reset/Retry-After headers with at most two retries of at most one minute
   each. Network/timeouts, malformed JSON, HTTP 408 and HTTP 5xx responses also get
   at most two retries for reads/cancellation, normally after 5s and 10s. Dispatch
@@ -348,9 +341,8 @@ always-running `CPU CI gate` after rollout validation, not the individual suite 
 
 Do not enable broad PR traffic until a bounded pilot proves primary success, queue
 fallback, exhaustion, product failure without retry, parent cancellation and the
-queue/start race on actual runners. The daily image build is the first consumer;
-no other repository workflows are migrated, and there is no cross-repository
-concurrency cap.
+queue/start race on actual runners. Each consumer owns its rollout and concurrency
+limits; there is no cross-repository concurrency cap.
 
 References:
 - [Workflow dispatch API](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)

@@ -646,15 +646,32 @@ for (const reason of ['parent cancellation', 'source change']) {
   });
 }
 
-test('post entry point cancels using the durable state written before interruption', {timeout: 5000}, async t => {
+test('post entry point cleans its own state without cancelling a parallel worker', {timeout: 5000}, async t => {
   const f = fixture(t);
   const lib = require('../lib');
   const active = {id: 100, request: 'runner-7-1-interrupted'};
-  f.runs.push({id: 100, status: 'queued', job: {status: 'queued'}});
+  f.runs.push(
+    {id: 100, status: 'queued', job: {status: 'queued'}},
+    {id: 101, display_title: 'runner-7-1-another-invocation', status: 'in_progress',
+      job: {status: 'in_progress', runner_id: 456}},
+  );
   lib.save(active);
   process.env.STATE_active = JSON.stringify(f.state());
   assert.equal(await f.run('../cleanup'), 0);
   assert.deepEqual(f.events, ['cancel:100', 'completed:100:cancelled']);
+  assert.equal(f.runs[1].status, 'in_progress');
+});
+
+test('invocations sharing a parent run have different request identities', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  f.onDispatch = run => f.finish(run, 'success');
+  assert.equal(await f.run(), 0);
+  assert.equal(await f.run(), 0);
+  assert.equal(f.runs.length, 2);
+  const requests = f.runs.map(run => run.payload.inputs['request-id']);
+  assert.ok(requests.every(request => request.startsWith('runner-7-1-')));
+  assert.notEqual(requests[0], requests[1]);
+  assert.ok(!f.events.some(event => event.startsWith('cancel:')));
 });
 
 test('post cleanup with unknown run ID cancels only the matching request', {timeout: 5000}, async t => {

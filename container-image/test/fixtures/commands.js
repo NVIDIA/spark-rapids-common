@@ -32,6 +32,8 @@ if (command === 'docker') {
   event.buildx = process.env.BUILDX_CONFIG;
   event.certs = process.env.DOCKER_CERT_PATH;
   event.authOverride = process.env.DOCKER_AUTH_CONFIG ?? null;
+  event.hasRuntimeToken = Boolean(process.env.ACTIONS_RUNTIME_TOKEN);
+  event.resultsUrl = process.env.ACTIONS_RESULTS_URL;
   event.contexts = fs.realpathSync(path.join(event.directory, 'contexts'));
   event.plugins = fs.realpathSync(path.join(event.directory, 'cli-plugins'));
 }
@@ -46,6 +48,17 @@ if (command === 'sleep') {
   process.exit(result.status ?? 91);
 } else if (command === 'docker' && args[0] === 'buildx' && args[1] === 'build') {
   if (failure === 'build') process.exit(42);
+  if (failure === 'cache-import') {
+    // BuildKit reports unavailable metadata but proceeds without that cache.
+    console.error('ERROR: failed to configure registry cache importer: connection refused');
+  }
+  if (failure === 'cache-export') {
+    const exporters = args.flatMap((arg, i) => arg === '--cache-to' ? [args[i + 1]] : []);
+    console.error('ERROR: cache service unavailable during export');
+    if (!exporters.length || exporters.some(value => !value.endsWith(',ignore-error=true'))) {
+      process.exit(46);
+    }
+  }
   if (args.includes('--metadata-file') && failure !== 'missing-metadata') {
     const digest = failure === 'bad-digest' ? 'invalid' : 'sha256:' + 'a'.repeat(64);
     fs.writeFileSync(option('--metadata-file'), JSON.stringify({'containerimage.digest': digest}));
