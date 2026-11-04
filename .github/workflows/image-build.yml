@@ -57,8 +57,8 @@ jobs:
       matrix:
         image: ${{ fromJSON(needs.configure.outputs.images) }}
     runs-on: ubuntu-latest
-    # Three 10-minute queues, one 30-minute build, and cancellation/API overhead.
-    timeout-minutes: 90
+    # Three 10-minute queues, a final 60-minute queue, one build, and API overhead.
+    timeout-minutes: 150
     permissions:
       contents: read
       actions: write
@@ -77,5 +77,6 @@ jobs:
           source-sha: ${{ github.sha }}
           workload: ${{ toJSON(matrix) }}
           runner-type: cpu-amd64
+          queue-policy: extended
           queue-timeout-minutes: '10'
           execution-timeout-minutes: '30'

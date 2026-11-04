@@ -38,12 +38,15 @@ inputs:
     description: Optional ordered JSON array replacing the selected profile's default pools; must match its family, architecture and GPU count
     # Linux defaults live in index.js. Override for restricted access or hardware requirements.
     required: false
+  queue-policy:
+    description: Standard preserves existing queues; extended uses CPU 10/GPU 15 minutes and a final 60-minute re-wait on eligible shared profiles
+    default: standard
   workload:
     description: JSON object passed unchanged to the child, such as image digest and artifact run ID
     default: '{}'
   queue-timeout-minutes:
-    description: Maximum observed queued time per candidate, from 1 to 30 minutes
-    default: '10'
+    description: Default queue limit from 1 to 60 minutes (standard 10, extended CPU 10/GPU 15); a candidate's queue-timeout-minutes takes precedence
+    required: false
   execution-timeout-minutes:
     description: Maximum observed execution time, from 1 to 300 minutes; never retried
     default: '180'

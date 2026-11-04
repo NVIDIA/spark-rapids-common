@@ -48,7 +48,7 @@ concurrency:
 jobs:
   runner-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    timeout-minutes: 135
     permissions:
       contents: read
       actions: write
@@ -60,6 +60,7 @@ jobs:
           source-ref: ${{ inputs.source-ref }}
           source-sha: ${{ inputs.source-sha }}
           runner-type: cpu
+          queue-policy: extended
           queue-timeout-minutes: '10'
           execution-timeout-minutes: '15'
 ```
@@ -134,16 +135,18 @@ cancel upstream builds or unrelated jobs. Do not rerun a child directly; rerun i
 Consumers **must** set `runner-type`, even with an explicit `runners` override.
 `cpu` means `cpu-amd64`; `gpu` means `gpu-amd64`. Missing, blank or unknown types
 fail before any API request. Omit `runners` (or leave it blank) to select the
-profile's shared Linux defaults:
+profile's shared Linux defaults. `queue-policy: standard` is the default and
+preserves the existing pool order and 10-minute omitted queue timeout. Existing
+consumers need no changes. Explicit `queue-timeout-minutes` values still apply.
 
-| `runner-type` | GPUs per worker | Pool preference order |
-| --- | --- | --- |
-| `cpu` / `cpu-amd64` | None | 16 -> 8 -> 32 cores, amd64 |
-| `cpu-arm64` | None | 16 -> 8 -> 32 cores, arm64 |
-| `gpu` / `gpu-amd64` | 1 | RTX PRO 6000 -> H100 -> H200 -> A100 -> L40G -> L4 |
-| `gpu-arm64` | 1 | GB300 -> GH200 -> A100 -> L4 |
-| `gpu-amd64-2gpu` | 2 | RTX PRO 6000 -> H100 -> H200 |
-| `gpu-arm64-2gpu` | 2 | L4 only; no alternative pool currently granted |
+| `runner-type` | GPUs per worker | Standard order | Extra final queue with `extended` |
+| --- | --- | --- | --- |
+| `cpu` / `cpu-amd64` | None | 16 -> 8 -> 32 cores, amd64 | CPU32, 60 minutes |
+| `cpu-arm64` | None | 16 -> 8 -> 32 cores, arm64 | CPU32, 60 minutes |
+| `gpu` / `gpu-amd64` | 1 | RTX PRO 6000 -> H100 -> H200 -> A100 -> L40G -> L4 | RTX PRO 6000, 60 minutes |
+| `gpu-arm64` | 1 | GB300 -> GH200 -> A100 -> L4 | None |
+| `gpu-amd64-2gpu` | 2 | RTX PRO 6000 -> H100 -> H200 | RTX PRO 6000, 60 minutes |
+| `gpu-arm64-2gpu` | 2 | L4 only; no alternative pool currently granted | None |
 
 For example, set `runner-type: gpu-amd64-2gpu` for two GPUs on **one worker**,
 not two independent workers. Queue exhaustion fails; it never downgrades GPU count
@@ -154,6 +157,15 @@ and Spark project grants in `nv-gha-runners/enterprise-runner-configuration`
 (`docs/runner-groups.md` and `projects/spark.yaml`). GPU defaults use `latest` labels;
 CPU defaults use `nv-cpu-general` and exclude 4-core instances. These are maintained
 lists, not live discovery or a guarantee of queue availability.
+
+Opt in to `queue-policy: extended` only after increasing the parent timeout.
+Its normal queue defaults are **10 minutes for CPU** and **15 minutes for GPU**.
+Its CPU profiles and the amd64 GPU profiles finish with a fresh 60-minute request
+to the repeated pool. ARM GPU profiles have no RTX PRO 6000 pool and keep their
+existing order without a repeated pool. Every earlier worker must be confirmed
+cancelled without execution before another request, including the final re-wait.
+The CPU32 final preference is based on a November 2026 cross-project scheduling
+sample, not a capacity guarantee; the smaller ARM sample is less conclusive.
 
 The consuming repository must have access to **every** selected pool, and its
 workload must support their GPU architectures, driver, VRAM and minimum CPU/RAM/disk.
@@ -174,6 +186,23 @@ than silently selecting defaults. Explicit lists can select another supported OS
 or driver track. CPU sizes may differ; memory-optimized labels such as
 `linux-amd64-cpu16m` require `nv-cpu-memory` and separate access.
 
+A candidate may set a numeric `queue-timeout-minutes` from 1 to 60. It overrides
+the action-level queue deadline. A duplicate label is accepted only as the final
+candidate, with an explicit deadline and the same runner group:
+
+```yaml
+runner-type: cpu-amd64
+queue-timeout-minutes: '10'
+runners: >-
+  [{"group":"nv-cpu-general","labels":"linux-amd64-cpu16"},
+   {"group":"nv-cpu-general","labels":"linux-amd64-cpu32"},
+   {"group":"nv-cpu-general","labels":"linux-amd64-cpu32","queue-timeout-minutes":60}]
+```
+
+The timeout property is coordinator policy only; the dispatched `runner` input
+and output still contain just `group` and `labels`. Existing worker definitions
+and explicit unique candidate lists remain compatible.
+
 Replace `Workload` with the GPU workload steps; `nvidia-smi` can be the initial GPU
 sanity check. Never mix CPU and GPU candidates in one sequence. A CPU-only job and
 a GPU job each use their own coordinator invocation and workload workflow.
@@ -191,9 +220,10 @@ turn required test failures into success. Public GHCR images need no registry lo
 
 The repository's [daily image workflow](../.github/workflows/image-build.yml) reads
 its image matrix from the [image catalog](../.github/image-builds.json), currently
-containing the signoff image. It selects `runner-type: cpu-amd64`, trying
+containing the signoff image. It explicitly selects `runner-type: cpu-amd64`
+and `queue-policy: extended`, trying
 `linux-amd64-cpu16`, `cpu8`, then `cpu32`, all in `nv-cpu-general`, with a
-**10-minute queue timeout per candidate**.
+**10-minute queue timeout per candidate**, then `cpu32` again for up to 60 minutes.
 Only one managed worker runs at a time. Memory-optimized groups are not enabled for
 this repository, and ARM runners are intentionally excluded from this sequence.
 
@@ -223,8 +253,11 @@ trigger are unchanged; rerun the parent, not the dispatched worker.
 
 ## Behavior and limits
 
-- One to six candidates, in the selected order, never concurrent. Default queue
-  deadline: 10 minutes each. Override from 1 to 30 minutes. The queue clock starts
+- One to seven candidates, in the selected order, never concurrent. Standard
+  policy retains 10-minute omitted deadlines and no automatic re-wait. Extended
+  policy uses CPU 10 minutes, GPU 15 minutes, and final re-waits as listed above.
+  Override from 1 to 60 minutes, with per-candidate overrides taking
+  precedence over the action-level input. The queue clock starts
   when the single worker job is first observed queued, not during upstream preparation.
 - NVIDIA runner labels must preserve OS, architecture and CPU/GPU family. GPU
   candidates must also preserve GPU count. CPU core counts may differ. The caller
@@ -265,9 +298,12 @@ trigger are unchanged; rerun the parent, not the dispatched worker.
   API outages can prevent cleanup; a child already executing then relies on its
   own `timeout-minutes`. Check the reported run ID if cleanup cannot be confirmed.
 - Set the parent timeout above all queue budgets, one execution budget and cleanup
-  time. The CPU example allows 65 minutes for up to 30 minutes of queueing, 15 minutes of
-  execution and overhead. The six-pool GPU default needs a larger parent budget
-  (for example, 100 minutes for 60 minutes of queueing, 15 of execution and overhead).
+  time. The CPU example allows 135 minutes for up to 90 minutes of queueing, 15 minutes of
+  execution and overhead. The extended amd64 single-GPU policy allows up to 150 minutes of
+  queueing: six 15-minute queues plus a final 60-minute queue. A 15-minute worker
+  should allow at least 195 minutes for its coordinator, including startup and
+  cancellation overhead. Update existing coordinators before adopting longer queues;
+  the action cannot extend the parent job's timeout.
   Defaults allow 180 minutes of execution; a longer real
   workload needs correspondingly larger parent and child timeouts.
 - Logs and the parent step summary report candidates, observed waits, child links

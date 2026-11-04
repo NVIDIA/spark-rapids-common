@@ -47,8 +47,16 @@ const defaultRunners = {
   ],
 };
 
-function minutes(name, maximum) {
-  const value = Number(input(name));
+// Extended waits are opt-in so existing coordinators retain their timeout budgets.
+const finalQueueLabels = {
+  'cpu-amd64': 'linux-amd64-cpu32',
+  'cpu-arm64': 'linux-arm64-cpu32',
+  'gpu-amd64': 'linux-amd64-gpu-rtxpro6000-latest-1',
+  'gpu-amd64-2gpu': 'linux-amd64-gpu-rtxpro6000-latest-2',
+};
+
+function minutes(name, maximum, defaultValue) {
+  const value = Number(process.env['INPUT_' + name.toUpperCase()]?.trim() || defaultValue);
   if (!Number.isInteger(value) || value < 1 || value > maximum) {
     throw new Error(`${name} must be an integer from 1 to ${maximum}`);
   }
@@ -62,16 +70,31 @@ function candidates() {
     throw new Error(`runner-type must be cpu, gpu, or one of: ${Object.keys(defaultRunners).join(', ')}`);
   }
   const configured = process.env.INPUT_RUNNERS?.trim();
-  const runners = configured ? JSON.parse(configured) : defaultRunners[type];
-  if (!Array.isArray(runners) || runners.length < 1 || runners.length > 6) {
-    throw new Error('runners must contain one to six candidates');
+  const policy = process.env['INPUT_QUEUE-POLICY']?.trim() || 'standard';
+  if (!['standard', 'extended'].includes(policy)) {
+    throw new Error('queue-policy must be standard or extended');
+  }
+  let runners = configured ? JSON.parse(configured) : defaultRunners[type];
+  if (!configured && policy === 'extended' && Object.hasOwn(finalQueueLabels, type)) {
+    runners = [...runners, {
+      ...runners.find(runner => runner.labels === finalQueueLabels[type]),
+      'queue-timeout-minutes': 60,
+    }];
+  }
+  if (!Array.isArray(runners) || runners.length < 1 || runners.length > 7) {
+    throw new Error('runners must contain one to seven candidates');
   }
   let shape;
   const seen = new Set();
-  for (const runner of runners) {
-    if (!runner || Object.keys(runner).sort().join(',') !== 'group,labels' ||
+  for (const [index, runner] of runners.entries()) {
+    if (!runner || !['group,labels', 'group,labels,queue-timeout-minutes'].includes(Object.keys(runner).sort().join(',')) ||
         typeof runner.group !== 'string' || typeof runner.labels !== 'string') {
-      throw new Error('Each candidate must have a runner group and one labels string');
+      throw new Error('Each candidate must have group and labels strings, with an optional queue-timeout-minutes');
+    }
+    const queueMinutes = runner['queue-timeout-minutes'];
+    if (Object.hasOwn(runner, 'queue-timeout-minutes') &&
+        (!Number.isInteger(queueMinutes) || queueMinutes < 1 || queueMinutes > 60)) {
+      throw new Error('Candidate queue-timeout-minutes must be an integer from 1 to 60');
     }
     const gpu = runner.labels.match(/^(linux|windows|wsl)-(amd64|arm64)-gpu-[a-z0-9]+-(earliest|latest)-([1-9][0-9]*)$/);
     const cpu = runner.labels.match(/^(linux|windows)-(amd64|arm64)-cpu([1-9][0-9]*)(m?)$/);
@@ -88,7 +111,11 @@ function candidates() {
       throw new Error('Fallback must preserve OS, architecture, CPU/GPU family and GPU count');
     }
     shape = current;
-    if (seen.has(runner.labels)) throw new Error('Duplicate runner candidate');
+    // Only an explicit final re-wait may repeat a pool; execution is still never retried.
+    if (seen.has(runner.labels) && (index !== runners.length - 1 || queueMinutes === undefined ||
+        !runners.slice(0, index).some(previous => previous.labels === runner.labels && previous.group === runner.group))) {
+      throw new Error('Duplicate runner candidate requires an explicit final queue-timeout-minutes and the same group');
+    }
     seen.add(runner.labels);
   }
   const [, architecture, family, count] = shape.split(':');
@@ -97,12 +124,12 @@ function candidates() {
     throw new Error(`runners must match runner-type ${type}: CPU/GPU family, architecture and GPU count`);
   }
   console.log(`Using ${configured ? 'explicit runners' : 'shared defaults'} for ${type}: ${runners.map(runner => runner.labels).join(' -> ')}`);
-  return runners;
+  return {runners, queueDefault: policy === 'extended' && type.startsWith('gpu-') ? 15 : 10};
 }
 
 async function main() {
-  const runners = candidates();
-  const queueLimit = minutes('queue-timeout-minutes', 30);
+  const {runners, queueDefault} = candidates();
+  const defaultQueueLimit = minutes('queue-timeout-minutes', 60, queueDefault);
   const executionLimit = minutes('execution-timeout-minutes', 300);
   const workflow = input('workflow');
   if (!/^[A-Za-z0-9_.-]+\.ya?ml$/.test(workflow)) throw new Error('workflow must be a YAML filename');
@@ -138,12 +165,15 @@ async function main() {
   let active = null;
   try {
     for (let i = 0; i < runners.length; i++) {
+      const candidate = runners[i];
+      const queueLimit = candidate['queue-timeout-minutes'] === undefined ?
+        defaultQueueLimit : candidate['queue-timeout-minutes'] * 60000;
       await ensureCurrent();
       if ((await api(`/commits/${encodeURIComponent(workflowRef)}`)).sha !== workflowSha) {
         throw new Error('Trusted workflow ref changed; restart the coordinator');
       }
       active = {
-        workflow, workflowSha, runner: runners[i],
+        workflow, workflowSha, runner: {group: candidate.group, labels: candidate.labels},
         request: `runner-${parentId}-${parentAttempt}-${randomUUID()}`,
         // Run timestamps have second precision; allow for rounding and small clock skew.
         created: new Date(Date.now() - 60000).toISOString(),
@@ -172,6 +202,7 @@ async function main() {
       console.log(`Candidate ${i + 1}/${runners.length}: ${active.runner.labels}; ${active.url}`);
 
       const dispatchedAt = Date.now();
+      console.log('Queue deadline for this candidate: ' + queueLimit / 60000 + ' minutes');
       const jobDeadline = dispatchedAt + 120000;
       console.log(`Child ${active.id}: first metadata poll in 15s (within the 120s startup window)`);
       await sleep(15000);
