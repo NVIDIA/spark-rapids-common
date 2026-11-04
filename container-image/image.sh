@@ -68,9 +68,32 @@ fi
 image="ghcr.io/${GITHUB_REPOSITORY,,}/$image"
 candidate="$image:build-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 scratch=$(mktemp -d)
-mkdir "$scratch/anonymous"
-trap 'docker logout ghcr.io; rm -rf "$scratch"' EXIT
-printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
+trap 'rm -rf "$scratch"' EXIT
+caller_config=${DOCKER_CONFIG:-"$HOME/.docker"}
+[[ "$caller_config" == /* ]] || caller_config="$PWD/$caller_config"
+config_file="$caller_config/config.json"
+[[ -f "$config_file" ]] || config_file=/dev/null
+export BUILDX_CONFIG=${BUILDX_CONFIG:-"$caller_config/buildx"}
+export DOCKER_CERT_PATH=${DOCKER_CERT_PATH:-"$caller_config"}
+for profile in publisher anonymous; do
+  mkdir "$scratch/$profile"
+  # Keep the caller's Docker endpoint and installed CLI plugins available.
+  for directory in contexts cli-plugins; do
+    if [[ -d "$caller_config/$directory" ]]; then
+      ln -s "$caller_config/$directory" "$scratch/$profile/$directory"
+    fi
+  done
+done
+# Bypass GHCR credential helpers without changing the caller's credential store.
+jq -s '.[0] // {} |
+  .auths["ghcr.io"] = {auth: ((env.GHCR_USER + ":" + env.GHCR_TOKEN) | @base64)} |
+  .credHelpers["ghcr.io"] = ""
+' "$config_file" > "$scratch/publisher/config.json"
+# A nonempty auths map also prevents automatic native credential-helper detection.
+jq 'del(.auths, .credsStore, .credHelpers) | .auths = {"ghcr.io": {}}' \
+  "$scratch/publisher/config.json" > "$scratch/anonymous/config.json"
+export DOCKER_CONFIG="$scratch/publisher"
+unset DOCKER_AUTH_CONFIG
 platform_list=$(IFS=,; printf '%s' "${platforms[*]}")
 docker buildx build "${build_options[@]}" --no-cache --platform "$platform_list" \
   --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \

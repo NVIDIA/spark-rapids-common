@@ -58,7 +58,9 @@ if (require.main === module) {
   try {
     main();
   } catch (error) {
-    console.error('::error::' + error.message);
+    const message = String(error.message).replaceAll('%', '%25')
+      .replaceAll('\r', '%0D').replaceAll('\n', '%0A');
+    console.error('::error::' + message);
     process.exitCode = 1;
   }
 }

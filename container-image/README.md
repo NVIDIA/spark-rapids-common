@@ -49,6 +49,10 @@ The caller owns source/branch authorization, approved PR handling, runner choice
 queue fallback, concurrency and job timeouts. Do not expose publishing credentials
 to PR-controlled scripts. This action does not decide whether a source is trusted.
 
+Publication uses temporary Docker credentials without logging in or out of the
+caller's GHCR account. Existing Buildx, Docker context and other registry settings
+are retained; temporary credentials are removed on exit.
+
 Images publish under `ghcr.io/<owner>/<repository>/<image>`.
 The package must permit public anonymous pulls. A new package may require a
 one-time visibility change before promotion succeeds. Never mirror private
