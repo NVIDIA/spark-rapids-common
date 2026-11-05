@@ -59,6 +59,7 @@ function fixture(t) {
     GITHUB_REPOSITORY: 'example/consumer', GITHUB_SHA: 'b'.repeat(40),
     GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2', GITHUB_SERVER_URL: 'https://github.com',
     GITHUB_STEP_SUMMARY: path.join(root, 'summary'),
+    GITHUB_OUTPUT: path.join(root, 'outputs'),
     GHCR_USER: 'fixture-user', GHCR_TOKEN: 'fixture-token',
     MOCK_EVENTS: path.join(root, 'events'),
   };
@@ -85,9 +86,14 @@ function fixture(t) {
       assert.deepEqual(fs.readdirSync(env.TMPDIR), [], 'temporary credentials must be removed');
       const summary = fs.existsSync(env.GITHUB_STEP_SUMMARY) ?
         fs.readFileSync(env.GITHUB_STEP_SUMMARY, 'utf8') : '';
+      const outputs = fs.existsSync(env.GITHUB_OUTPUT) ?
+        fs.readFileSync(env.GITHUB_OUTPUT, 'utf8') : '';
+      if (result.status !== 0 || overrides.PUBLISH_IMAGE === 'false') {
+        assert.equal(outputs, '', 'validation and failed publication must not emit outputs');
+      }
       const docker = events.filter(e => e.command === 'docker');
       assert.ok(docker.every(e => !['login', 'logout'].includes(e.args[0])));
-      return {...result, events, docker, summary};
+      return {...result, events, docker, summary, outputs};
     },
   };
 }
@@ -140,6 +146,17 @@ test('publication isolates credentials and promotes the verified digest after ev
     assert.equal(fs.existsSync(event.directory), false);
   }
   assert.match(result.summary, /Published ghcr.io\/example\/consumer\/toolchain:test/);
+  assert.equal(result.outputs,
+    `image=ghcr.io/example/consumer/toolchain\ndigest=${digest}\nreference=${reference}\n`);
+});
+
+test('publication appends outputs without replacing existing step outputs', t => {
+  const f = fixture(t);
+  fs.writeFileSync(f.env.GITHUB_OUTPUT, 'existing=value\n');
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.outputs,
+    `existing=value\nimage=ghcr.io/example/consumer/toolchain\ndigest=${digest}\nreference=${reference}\n`);
 });
 
 test('explicit Buildx and TLS paths are preserved', t => {
@@ -348,10 +365,11 @@ test('daily image catalog works through the shared publisher without queue dispa
 
 for (const publish of ['false', 'true']) {
   test('standalone shell entry point remains compatible: publish=' + publish, t => {
-    const result = fixture(t).run({PUBLISH_IMAGE: publish}, {entrypoint: 'shell'});
+    const result = fixture(t).run({PUBLISH_IMAGE: publish, GITHUB_OUTPUT: ''}, {entrypoint: 'shell'});
     assert.equal(result.status, 0, result.stderr);
     assert.equal(builds(result).length, publish === 'true' ? 1 : 2);
     assert.equal(promotions(result).length, publish === 'true' ? 1 : 0);
+    assert.equal(result.outputs, '');
   });
 }
 

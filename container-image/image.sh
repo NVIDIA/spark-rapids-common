@@ -141,3 +141,6 @@ done
 docker buildx imagetools create --prefer-index=false --tag "$image:$tag" "$reference"
 printf 'Published %s:%s\nDigest: %s\nSource: %s\nPlatforms: %s\nAnonymous pulls and smoke checks passed.\n' \
   "$image" "$tag" "$reference" "$GITHUB_SHA" "${platforms[*]}" | tee -a "$GITHUB_STEP_SUMMARY"
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  printf 'image=%s\ndigest=%s\nreference=%s\n' "$image" "$digest" "$reference" >> "$GITHUB_OUTPUT"
+fi
