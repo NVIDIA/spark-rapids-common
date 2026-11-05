@@ -42,6 +42,19 @@ jq and timeout. Multiple platforms require native support or caller-configured
 emulation. Validation builds/loads platforms sequentially; publication builds a
 multi-platform candidate once.
 
+## Outputs
+
+Successful publication exposes `image` (the fully qualified GHCR repository),
+`digest` (the verified `sha256:...`) and `reference` (`image@digest`). These outputs
+are written only after anonymous pulls, smoke checks and consumer-tag promotion
+succeed. Validation-only runs and failed publication do not emit them.
+
+Callers can promote `steps.<id>.outputs.reference` to additional aliases without
+rebuilding or reading a mutable tag. The caller owns alias authorization and
+publisher concurrency, and must authenticate separately for registry mutations:
+this action's temporary credentials are removed on exit. Direct `image.sh` callers
+without `GITHUB_OUTPUT` retain the existing behavior.
+
 ## Optional Build Cache
 
 `cache-from` and `cache-to` are optional arrays of Buildx cache specifications.

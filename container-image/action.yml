@@ -24,6 +24,13 @@ inputs:
   token:
     description: GHCR token with packages write permission; required only for publication
     default: ''
+outputs:
+  image:
+    description: Fully qualified GHCR image repository after successful publication
+  digest:
+    description: Verified registry digest after successful publication
+  reference:
+    description: Immutable image@digest after successful publication
 runs:
   using: node24
   main: index.js
