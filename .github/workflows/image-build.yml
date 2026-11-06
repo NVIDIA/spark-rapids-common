@@ -25,6 +25,7 @@ permissions:
 concurrency:
   group: daily-image-build
   cancel-in-progress: false
+  queue: max
 
 jobs:
   configure:

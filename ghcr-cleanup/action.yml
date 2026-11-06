@@ -1,0 +1,84 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: GHCR cleanup
+description: Retire old build-only image versions while preserving live aliases and manifest dependencies
+inputs:
+  package:
+    description: Container package name without owner, such as my-project/build-image
+    required: true
+  owner:
+    description: Package owner
+    default: ${{ github.repository_owner }}
+  owner-type:
+    description: organization or user
+    default: organization
+  tag-patterns:
+    description: JSON array of disposable tag patterns; every tag must match (only * is a wildcard)
+    default: '["build-*"]'
+  protected-tag-patterns:
+    description: JSON array of additional tag patterns to retain even when disposable
+    default: '[]'
+  protected-digests:
+    description: JSON array of immutable digests pinned by consumers to retain
+    default: '[]'
+  retention-days:
+    description: Minimum age since both creation and last update
+    default: '7'
+  keep-latest:
+    description: Retain at least this many newest matching versions regardless of age
+    default: '0'
+  max-delete:
+    description: Maximum versions to delete in one invocation
+    default: '20'
+  dry-run:
+    description: Report eligible versions without deleting anything
+    default: 'true'
+  github-token:
+    description: Token with package read access; deletion also requires package admin access
+    default: ${{ github.token }}
+outputs:
+  candidates:
+    description: Number of eligible versions after protection and per-run limit
+    value: ${{ steps.cleanup.outputs.candidates }}
+  deleted:
+    description: Number of confirmed version deletions
+    value: ${{ steps.cleanup.outputs.deleted }}
+runs:
+  using: composite
+  steps:
+    - name: Plan and clean old image versions
+      id: cleanup
+      uses: actions/github-script@v8
+      env:
+        CLEANUP_ACTION_PATH: ${{ github.action_path }}
+        CLEANUP_PACKAGE: ${{ inputs.package }}
+        CLEANUP_OWNER: ${{ inputs.owner }}
+        CLEANUP_OWNER_TYPE: ${{ inputs.owner-type }}
+        CLEANUP_PATTERNS: ${{ inputs.tag-patterns }}
+        CLEANUP_PROTECTED_PATTERNS: ${{ inputs.protected-tag-patterns }}
+        CLEANUP_PROTECTED_DIGESTS: ${{ inputs.protected-digests }}
+        CLEANUP_DAYS: ${{ inputs.retention-days }}
+        CLEANUP_KEEP: ${{ inputs.keep-latest }}
+        CLEANUP_LIMIT: ${{ inputs.max-delete }}
+        CLEANUP_DRY_RUN: ${{ inputs.dry-run }}
+        CLEANUP_TOKEN: ${{ inputs.github-token }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        # Never automatically repeat an ambiguous DELETE.
+        retries: 0
+        script: |
+          const {cleanup, optionsFromEnv} = require(
+            require('node:path').join(process.env.CLEANUP_ACTION_PATH, 'index.js'));
+          await cleanup({github, core, options: optionsFromEnv(process.env)});

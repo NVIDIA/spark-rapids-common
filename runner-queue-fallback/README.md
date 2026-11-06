@@ -238,10 +238,8 @@ on hosted `ubuntu-latest`, one image at a time. It no longer uses CPU queue
 fallback. Its main-only schedule, manual trigger, signoff `v1` tag and amd64/arm64
 checks are preserved.
 
-The [legacy image worker](../.github/workflows/image-build-worker.yml) remains
-available for existing dispatch callers, with its source/parent guards and
-30-minute execution limit unchanged. Other consumers can still use CPU or GPU
-fallback with their own workers; their queues and policies are unaffected.
+Other consumers can use CPU or GPU fallback with their own workers; their queues
+and policies are unaffected.
 
 ## Behavior and limits
 
