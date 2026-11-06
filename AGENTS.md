@@ -13,6 +13,13 @@
 - Prefer the smallest change at the owning layer. Reuse existing actions and
   workflows instead of copying orchestration into another script or workflow.
   New shared actions need a README with inputs, outputs, permissions, and usage.
+- `container-image/metadata.py` owns portable recipe hashing, not project tags,
+  CUDA policies or registry access. Keep its standalone Python API/CLI usable by
+  GHA and internal CI. Consumers must explicitly list all local COPY/ADD inputs
+  in `recipe-inputs`, including requirements files and context controls such as
+  `.dockerignore`; do not introduce a Dockerfile parser. A file-content-only
+  change must change the fingerprint. Preserve the no-input hash format and
+  maintain the existing container-image functional tests for this contract.
 
 ## Workflow and Suite Changes
 
