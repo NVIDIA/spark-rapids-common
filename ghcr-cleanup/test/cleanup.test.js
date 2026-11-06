@@ -162,12 +162,32 @@ test('age-based cleanup keeps no minimum build count and honors a repo retention
   assert.doesNotMatch(custom.logs.join('\n'), /Candidate 1:/);
 });
 
-test('bounded deletion retains candidates outside the batch and their manifest dependencies', async () => {
+test('bounded deletion removes old indexes before their children in later runs', async () => {
   const f = fixture(); f.options.limit = 1;
   const leaf = f.add(1, ['build-leaf']);
   f.add(2, ['build-index'], old, [leaf]);
   await f.run();
-  assert.equal(f.outputs.candidates, 0, 'retained index references first candidate');
+  assert.equal(f.outputs.candidates, 1);
+  assert.match(f.logs.join('\n'), /Candidate 2:/);
+  assert.doesNotMatch(f.logs.join('\n'), /Candidate 1:/);
+
+  f.versions = f.versions.filter(v => v.id !== 2);
+  f.logs.length = 0;
+  await f.run();
+  assert.equal(f.outputs.candidates, 1);
+  assert.match(f.logs.join('\n'), /Candidate 1:/);
+});
+
+test('protected older manifests cannot exhaust the cap ahead of deletable builds', async () => {
+  const f = fixture(); f.options.limit = 1; f.options.dryRun = false;
+  const first = f.add(1, ['build-first']);
+  const second = f.add(2, ['build-second']);
+  f.add(3, ['main'], old, [first, second]);
+  f.add(4, ['build-delete']);
+  f.add(5, ['build-next-run']);
+  await f.run();
+  assert.equal(f.outputs.deleted, 1);
+  assert.deepEqual(f.deletes(), ['DELETE /orgs/test-org/packages/container/project%2Fbuild-image/versions/4']);
 });
 
 test('retained indexes protect transitive platform and attestation manifests regardless of tags', async () => {
@@ -180,7 +200,7 @@ test('retained indexes protect transitive platform and attestation manifests reg
   await f.run();
   assert.equal(f.outputs.candidates, 1);
   assert.match(f.deletes()[0], /\/5$/);
-  assert.equal(f.fetched.filter(url => url.includes('/manifests/')).length, 4);
+  assert.equal(f.fetched.filter(url => url.includes('/manifests/')).length, 5);
 });
 
 test('retained untagged indexes also protect tagged descendants', async () => {

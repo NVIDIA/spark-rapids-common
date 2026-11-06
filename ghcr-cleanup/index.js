@@ -96,19 +96,18 @@ async function plan(versions, options, manifest, now = Date.now()) {
     !options.protectedDigests.includes(v.digest)).sort((a, b) => b.modified - a.modified || b.id - a.id);
   const cutoff = now - options.days * 86400000;
   const candidates = eligible.slice(options.keep).filter(v => v.modified < cutoff)
-    .reverse().slice(0, options.limit);
+    .reverse();
   if (!candidates.length) return [];
-  const removable = new Set(candidates.map(v => v.digest));
-  const retained = new Set();
-  // Untagged versions and candidates outside the batch remain roots too. Never
-  // delete a platform/attestation manifest still referenced by any retained root.
-  const pending = versions.filter(v => !removable.has(v.digest)).map(v => v.digest)
-    .concat(options.protectedDigests);
+  const visited = new Set();
+  const referenced = new Set(options.protectedDigests);
+  // Count only unreferenced images against the deletion limit. Scan every root,
+  // including old build indexes; their children can be removed in a later run.
+  const pending = versions.map(v => v.digest).concat(options.protectedDigests);
   while (pending.length) {
     const digest = pending.pop();
-    if (retained.has(digest)) continue;
-    if (!digestPattern.test(digest) || retained.size >= 10000) throw new Error('Invalid or oversized manifest graph');
-    retained.add(digest);
+    if (visited.has(digest)) continue;
+    if (!digestPattern.test(digest) || visited.size >= 10000) throw new Error('Invalid or oversized manifest graph');
+    visited.add(digest);
     const value = await manifest(digest);
     if (value.schemaVersion !== 2 || (!indexTypes.has(value.mediaType) && !imageTypes.has(value.mediaType))) {
       throw new Error(`Unsupported manifest ${digest}; no cleanup is safe`);
@@ -118,16 +117,20 @@ async function plan(versions, options, manifest, now = Date.now()) {
         value.manifests.some(child => !digestPattern.test(child.digest))) {
         throw new Error(`Invalid manifest index ${digest}`);
       }
-      pending.push(...value.manifests.map(child => child.digest));
+      for (const child of value.manifests) {
+        referenced.add(child.digest);
+        pending.push(child.digest);
+      }
     } else if (!value.config || !Array.isArray(value.layers)) {
       throw new Error(`Incomplete image manifest ${digest}`);
     }
     if (value.subject) {
       if (!digestPattern.test(value.subject.digest)) throw new Error(`Invalid manifest subject ${digest}`);
+      referenced.add(value.subject.digest);
       pending.push(value.subject.digest);
     }
   }
-  return candidates.filter(v => !retained.has(v.digest));
+  return candidates.filter(v => !referenced.has(v.digest)).slice(0, options.limit);
 }
 
 async function readWithRetry(read, wait = sleep) {
