@@ -31,7 +31,7 @@ const indexType = 'application/vnd.oci.image.index.v1+json';
 const env = {
   CLEANUP_OWNER: 'test-org', CLEANUP_PACKAGE: 'project/build-image', CLEANUP_OWNER_TYPE: 'organization',
   CLEANUP_PATTERNS: '["build-*"]', CLEANUP_PROTECTED_PATTERNS: '[]', CLEANUP_PROTECTED_DIGESTS: '[]',
-  CLEANUP_DAYS: '30', CLEANUP_KEEP: '0', CLEANUP_LIMIT: '20', CLEANUP_DRY_RUN: 'true',
+  CLEANUP_DAYS: '7', CLEANUP_KEEP: '0', CLEANUP_LIMIT: '20', CLEANUP_DRY_RUN: 'true',
   CLEANUP_TOKEN: 'test-secret', GITHUB_ACTOR: 'test-actor',
 };
 
@@ -127,6 +127,39 @@ test('consumer patterns, protected tags/digests, retention and keep-latest are h
   f.options.days = 100;
   await f.run();
   assert.equal(f.outputs.candidates, 0);
+});
+
+test('seven-day retention protects recent creations, updates and the exact boundary', async () => {
+  const f = fixture();
+  const daysAgo = days => new Date(now - days * 86400000).toISOString();
+  f.add(1, ['build-eight-days'], daysAgo(8));
+  f.add(2, ['build-seven-days'], daysAgo(7));
+  f.add(3, ['build-six-days'], daysAgo(6));
+  f.add(4, ['build-updated'], daysAgo(8)); f.versions.at(-1).updated_at = daysAgo(1);
+  f.add(5, ['build-created'], daysAgo(1)); f.versions.at(-1).updated_at = daysAgo(8);
+  await f.run();
+  assert.equal(f.outputs.candidates, 1);
+  assert.match(f.logs.join('\n'), /Candidate 1:/);
+  assert.doesNotMatch(f.logs.join('\n'), /Candidate [2345]:/);
+});
+
+test('age-based cleanup keeps no minimum build count and honors a repo retention override', async () => {
+  const f = fixture(); f.options.dryRun = false;
+  for (let id = 1; id <= 6; id++) {
+    f.add(id, [`build-old-${id}`], new Date(now - (id + 7) * 86400000).toISOString());
+  }
+  await f.run();
+  assert.equal(f.outputs.deleted, 6);
+  assert.equal(f.deletes().length, 6);
+
+  const custom = fixture();
+  custom.options = optionsFromEnv({...env, CLEANUP_DAYS: '14'});
+  custom.add(1, ['build-eight-days'], new Date(now - 8 * 86400000).toISOString());
+  custom.add(2, ['build-fifteen-days'], new Date(now - 15 * 86400000).toISOString());
+  await custom.run();
+  assert.equal(custom.outputs.candidates, 1);
+  assert.match(custom.logs.join('\n'), /Candidate 2:/);
+  assert.doesNotMatch(custom.logs.join('\n'), /Candidate 1:/);
 });
 
 test('bounded deletion retains candidates outside the batch and their manifest dependencies', async () => {

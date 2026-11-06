@@ -30,6 +30,7 @@ permissions:
 concurrency:
   group: daily-image-build
   cancel-in-progress: false
+  queue: max
 
 jobs:
   configure:
@@ -71,7 +72,6 @@ jobs:
         with:
           package: ${{ github.event.repository.name }}/${{ matrix.image }}
           tag-patterns: '["build-*"]'
-          retention-days: '30'
-          keep-latest: '5'
+          retention-days: '7'
           max-delete: '20'
           dry-run: ${{ github.event_name != 'schedule' && inputs.dry-run }}

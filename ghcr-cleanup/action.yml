@@ -35,10 +35,10 @@ inputs:
     default: '[]'
   retention-days:
     description: Minimum age since both creation and last update
-    default: '30'
+    default: '7'
   keep-latest:
     description: Retain at least this many newest matching versions regardless of age
-    default: '5'
+    default: '0'
   max-delete:
     description: Maximum versions to delete in one invocation
     default: '20'

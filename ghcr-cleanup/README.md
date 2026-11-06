@@ -1,6 +1,7 @@
 # GHCR Cleanup
 
-Delete old build-only package versions, not individual tags. A version sharing
+Delete build-only package versions older than seven days, not individual tags.
+Set `retention-days` to choose a different period for your repository. A version sharing
 `build-*` with `main-*`, release tags or `v1` is kept. Untagged versions and
 platform/attestation manifests referenced by retained images are also kept.
 
@@ -18,6 +19,7 @@ permissions:
 concurrency:
   group: build-image-maintenance
   cancel-in-progress: false
+  queue: max
 
 jobs:
   cleanup:
@@ -27,20 +29,16 @@ jobs:
       - uses: NVIDIA/spark-rapids-common/ghcr-cleanup@main
         with:
           package: my-project/build-image
-          tag-patterns: '["build-*"]'
-          retention-days: '30'
-          keep-latest: '5'
-          max-delete: '20'
+          retention-days: '7'
           dry-run: 'true'
 ```
 
-The example shows the defaults: keep five newest matching versions and delete
-at most 20 eligible versions per package per run, only when both creation and
-last update are older than 30 days. Set `dry-run: 'false'` to enable deletion.
+By default, every tag must match `build-*`, and both creation and last update must
+be older than the retention period. No minimum number of builds is kept.
+At most 20 versions are deleted per package per run. Set `dry-run: 'false'` to delete.
 
-Every tag on a version must match `tag-patterns` (`*` wildcard only). Keep patterns
-narrow; optional `protected-tag-patterns` and `protected-digests` add exceptions.
-See [action.yml](action.yml) for all inputs and the `candidates`/`deleted` outputs.
+See [action.yml](action.yml) for optional tag patterns, protected references,
+deletion limits and the `candidates`/`deleted` outputs.
 No checkout, Docker daemon or build metadata is required.
 
 ## Safety
