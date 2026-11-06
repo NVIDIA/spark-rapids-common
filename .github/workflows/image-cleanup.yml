@@ -1,0 +1,77 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Image cleanup
+on:
+  schedule:
+    - cron: '47 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Report candidates without deleting versions
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Use the same lock as image-build.yml; never overlap publication and cleanup.
+concurrency:
+  group: daily-image-build
+  cancel-in-progress: false
+
+jobs:
+  configure:
+    if: >-
+      github.repository == 'NVIDIA/spark-rapids-common' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      images: ${{ steps.catalog.outputs.images }}
+    steps:
+      - uses: NVIDIA/spark-rapids-common/checkout@main
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Read image catalog
+        id: catalog
+        run: |
+          images=$(jq -ce 'keys | select(length > 0)' .github/image-builds.json)
+          printf 'images=%s\n' "$images" >> "$GITHUB_OUTPUT"
+
+  cleanup:
+    needs: configure
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      max-parallel: 1
+      matrix:
+        image: ${{ fromJSON(needs.configure.outputs.images) }}
+    steps:
+      - uses: NVIDIA/spark-rapids-common/checkout@main
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./ghcr-cleanup
+        with:
+          package: ${{ github.event.repository.name }}/${{ matrix.image }}
+          tag-patterns: '["build-*"]'
+          retention-days: '30'
+          keep-latest: '5'
+          max-delete: '20'
+          dry-run: ${{ github.event_name != 'schedule' && inputs.dry-run }}
