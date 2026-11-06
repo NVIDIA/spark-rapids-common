@@ -19,8 +19,10 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
+import stat
 import sys
 
 
@@ -29,7 +31,7 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def file_digest(root, name):
+def file_metadata(root, name):
     require(isinstance(name, str) and name and not Path(name).is_absolute(),
             "Recipe files must be nonempty checkout-relative paths")
     require("\\" not in name and all(part not in ("", ".", "..") for part in name.split("/")),
@@ -39,9 +41,10 @@ def file_digest(root, name):
     require(path.is_file(), f"Recipe file is missing or not a regular file: {name}")
     digest = hashlib.sha256()
     with path.open("rb") as source:
+        mode = stat.S_IMODE(os.fstat(source.fileno()).st_mode)
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
-    return digest.hexdigest()
+    return {"sha256": digest.hexdigest(), "mode": format(mode, "04o")}
 
 
 def string_list(value, field):
@@ -70,13 +73,13 @@ def fingerprint(config, root):
     excluded = string_list(config.get("recipe-exclude-args", []), "recipe-exclude-args")
     require(set(excluded).issubset(args), "recipe-exclude-args names an absent build argument")
     recipe = {
-        "dockerfile": file_digest(root, config.get("dockerfile")),
+        "dockerfile": file_metadata(root, config.get("dockerfile"))["sha256"],
         "platform": platform,
         "build-args": {key: value for key, value in args.items() if key not in excluded},
     }
     # Preserve the existing no-file-input recipe format.
     if inputs:
-        recipe["inputs"] = {name: file_digest(root, name) for name in sorted(inputs)}
+        recipe["inputs"] = {name: file_metadata(root, name) for name in sorted(inputs)}
     canonical = json.dumps(recipe, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "recipe-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

@@ -72,6 +72,9 @@ test('standalone CLI preserves the existing no-input JNI fingerprint without CI 
   assert.ifError(imported.error);
   assert.equal(imported.status, 0, imported.stderr);
   assert.equal(imported.stdout.trim(), f.version());
+  fs.chmodSync(path.join(f.root, 'ci/Dockerfile'), 0o755);
+  assert.equal(f.version(), 'recipe-' + sha256(JSON.stringify(recipe)),
+    'Dockerfile permissions alone do not alter the no-input recipe format');
 });
 
 test('explicit copied requirements and context configuration affect the fingerprint', t => {
@@ -85,6 +88,26 @@ test('explicit copied requirements and context configuration affect the fingerpr
   fs.writeFileSync(path.join(f.root, '.dockerignore'), '.git\nprivate\n');
   assert.notEqual(f.version(), updated);
   assert.equal(f.version(), f.version({...f.config, 'recipe-inputs': [...f.config['recipe-inputs']].reverse()}));
+});
+
+test('copied-file permission changes affect the fingerprint without changing its contents', t => {
+  const f = fixture(t);
+  const file = path.join(f.root, 'ci/install.sh');
+  const contents = '#!/bin/sh\necho installed\n';
+  fs.writeFileSync(file, contents);
+  f.config['recipe-inputs'] = ['ci/install.sh'];
+  fs.chmodSync(file, 0o644);
+  const original = f.version();
+  fs.chmodSync(file, 0o755);
+  const executable = f.version();
+  assert.notEqual(executable, original, 'chmod-only changes must invalidate copied scripts');
+  fs.chmodSync(file, 0o700);
+  assert.notEqual(f.version(), executable, 'group/other permission changes also matter');
+  fs.chmodSync(file, 0o644);
+  assert.equal(f.version(), original);
+  assert.equal(fs.readFileSync(file, 'utf8'), contents);
+  fs.utimesSync(file, new Date('2020-01-01'), new Date('2020-01-01'));
+  assert.equal(f.version(), original, 'timestamps must not cause image incompatibility');
 });
 
 test('recipe, platform and semantic build arguments matter; excluded scheduling args do not', t => {

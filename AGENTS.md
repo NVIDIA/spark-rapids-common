@@ -17,9 +17,10 @@
   CUDA policies or registry access. Keep its standalone Python API/CLI usable by
   GHA and internal CI. Consumers must explicitly list all local COPY/ADD inputs
   in `recipe-inputs`, including requirements files and context controls such as
-  `.dockerignore`; do not introduce a Dockerfile parser. A file-content-only
-  change must change the fingerprint. Preserve the no-input hash format and
-  maintain the existing container-image functional tests for this contract.
+  `.dockerignore`; do not introduce a Dockerfile parser. File-content-only and
+  copied-file-permission-only changes must change the fingerprint. Preserve the
+  no-input hash format and maintain the existing container-image functional tests
+  for this contract.
 
 ## Workflow and Suite Changes
 
