@@ -84,12 +84,7 @@ resolution remain caller-owned. A matching recipe is a compatibility check, not
 proof of provenance or reproducibility of mutable external downloads/base images.
 
 The hash covers Dockerfile bytes, platform, resolved arguments and the contents
-and Unix permission bits of each explicitly listed file. A chmod-only change must
-invalidate a copied script because [COPY preserves its permissions](https://docs.docker.com/reference/dockerfile/#copying-from-the-build-context).
-Calculate metadata from the same local context and permissions used to build the
-image. File timestamps and host ownership IDs are not included. The Dockerfile's
-own permissions are not included unless it is also a declared copied input.
-Paths are relative to `root`, with no directories,
+of each explicitly listed file. Paths are relative to `root`, with no directories,
 globs or paths escaping the checkout. File order does not matter; missing files
 fail. `recipe-inputs` and `recipe-exclude-args` default to empty arrays; arguments
 are never excluded implicitly. Exclude only nonsemantic controls such as build
