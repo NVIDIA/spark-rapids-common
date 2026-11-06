@@ -55,6 +55,48 @@ publisher concurrency, and must authenticate separately for registry mutations:
 this action's temporary credentials are removed on exit. Direct `image.sh` callers
 without `GITHUB_OUTPUT` retain the existing behavior.
 
+## Portable Recipe Metadata
+
+`metadata.py` provides `fingerprint(config, root)` and a standalone Python 3.9+
+CLI. Both work outside GitHub Actions, without Docker, credentials, registry
+access or GitHub environment variables. Pass a resolved single-platform config:
+
+~~~json
+{
+  "dockerfile": "ci/Dockerfile",
+  "platform": "linux/amd64",
+  "build-args": {"CUDA_VER": "12.9.1", "PARALLEL_LEVEL": "8"},
+  "recipe-inputs": ["integration_tests/requirements.txt"],
+  "recipe-exclude-args": ["PARALLEL_LEVEL"]
+}
+~~~
+
+~~~sh
+python3 /path/to/common/container-image/metadata.py --root "$PWD" < image-config.json
+# {"version":"recipe-<sha256>"}
+~~~
+
+The caller puts this value in the build config's `version` and compares it with
+the image's OCI version label before reuse. The build action does not calculate
+it automatically. Existing callers that supply their own version are unchanged.
+Tags, project versions, toolchain selection, fallback policy and registry/digest
+resolution remain caller-owned. A matching recipe is a compatibility check, not
+proof of provenance or reproducibility of mutable external downloads/base images.
+
+The hash covers Dockerfile bytes, platform, resolved arguments and the contents
+of each explicitly listed file. Paths are relative to `root`, with no directories,
+globs or paths escaping the checkout. File order does not matter; missing files
+fail. `recipe-inputs` and `recipe-exclude-args` default to empty arrays; arguments
+are never excluded implicitly. Exclude only nonsemantic controls such as build
+parallelism. With no file inputs, the existing recipe hash format is preserved.
+
+**List every local COPY/ADD source explicitly.** For example, cuDF-Spark's copied
+`integration_tests/requirements.txt` must be listed so a dependency-only edit
+changes the fingerprint. Apply the same rule to any future JNI copied inputs.
+List relevant context controls such as `.dockerignore` too. There is deliberately
+no Dockerfile parser or automatic directory scan. Update consumer CI path filters
+alongside the list so input-only edits trigger validation and publication.
+
 ## Optional Build Cache
 
 `cache-from` and `cache-to` are optional arrays of Buildx cache specifications.
@@ -136,6 +178,8 @@ anonymous pulls do not replace a clean-consumer download/performance check.
 
 ## Tests
 
-Run `node --test container-image/test/*.test.js` with Node.js 24, Bash 4+
-and jq. The tests execute both action and shell entry points with fake Docker/clock commands;
-they need no Docker daemon, registry credentials or network access.
+Run `node --test container-image/test/*.test.js` with Node.js 24, Python 3.9+,
+Bash 4+ and jq. The tests execute metadata CLI/imports and action/shell entry points
+with fake Docker/clock commands; they need no Docker daemon, registry credentials
+or network access. The existing folder-selected image-tooling job and CPU gate
+include these tests.
