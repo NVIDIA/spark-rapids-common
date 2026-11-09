@@ -19,6 +19,11 @@ publish=${PUBLISH_IMAGE:-false}
 [[ "$publish" == true || "$publish" == false ]]
 jq -e '
   (.image | type == "string") and (.tag | type == "string") and
+  (.tag as $tag |
+    (if has("aliases") then .aliases else [] end) |
+    type == "array" and length == (unique | length) and
+    all(.[]; type == "string" and
+      test("\\A[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}\\z") and . != $tag)) and
   ([.context, .dockerfile, ."smoke-test", (.version // .tag)] |
     all(type == "string" and length > 0)) and
   ((."build-args" // {}) | type == "object" and
@@ -137,10 +142,19 @@ for platform in "${platforms[@]}"; do
   bash "$smoke_test" "$reference" "$platform" "${smoke_args[@]}"
 done
 
-# Promote only the registry digest verified on every requested platform.
-docker buildx imagetools create --prefer-index=false --tag "$image:$tag" "$reference"
+# Promote every consumer tag from the same digest after all platforms pass.
+promotion_tags=(--tag "$image:$tag")
+alias_tags=()
+while IFS= read -r alias_tag; do
+  promotion_tags+=(--tag "$image:$alias_tag")
+  alias_tags+=("$alias_tag")
+done < <(jq -r '.aliases // [] | .[]' <<< "$IMAGE_CONFIG")
+docker buildx imagetools create --prefer-index=false "${promotion_tags[@]}" "$reference"
 printf 'Published %s:%s\nDigest: %s\nSource: %s\nPlatforms: %s\nAnonymous pulls and smoke checks passed.\n' \
   "$image" "$tag" "$reference" "$GITHUB_SHA" "${platforms[*]}" | tee -a "$GITHUB_STEP_SUMMARY"
+if (( ${#alias_tags[@]} > 0 )); then
+  printf 'Aliases: %s\n' "${alias_tags[*]}" | tee -a "$GITHUB_STEP_SUMMARY"
+fi
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   printf 'image=%s\ndigest=%s\nreference=%s\n' "$image" "$digest" "$reference" >> "$GITHUB_OUTPUT"
 fi

@@ -3,7 +3,7 @@
 Build and smoke-test a resolved image configuration. Validation loads images
 locally without registry credentials. Publication builds one GHCR candidate,
 pulls its registry digest anonymously, runs each platform's smoke check, and
-promotes the consumer tag only after all checks pass.
+promotes the consumer tag and any configured aliases only after all checks pass.
 
 ## Inputs
 
@@ -26,6 +26,11 @@ promotes the consumer tag only after all checks pass.
 ~~~
 
 `version` defaults to the tag; `build-args` and `smoke-args` default empty.
+Optional `aliases` (for example, `["main"]`) defaults to `[]`. Each alias must be
+a valid Docker tag, unique and different from the required primary `tag`.
+Publication promotes all tags to the same verified digest in one command;
+validation does not publish aliases. A failed promotion emits no outputs and is
+not retried, because some tags may already have changed.
 A single `platform` string is accepted instead of `platforms`.
 The smoke script receives the image reference, platform, then configured arguments.
 Use resolved string/number/boolean build arguments, not toolchain references.
@@ -46,13 +51,11 @@ multi-platform candidate once.
 
 Successful publication exposes `image` (the fully qualified GHCR repository),
 `digest` (the verified `sha256:...`) and `reference` (`image@digest`). These outputs
-are written only after anonymous pulls, smoke checks and consumer-tag promotion
-succeed. Validation-only runs and failed publication do not emit them.
+are written only after anonymous pulls, smoke checks and promotion of every
+configured tag succeed. Validation-only runs and failed publication do not emit them.
 
-Callers can promote `steps.<id>.outputs.reference` to additional aliases without
-rebuilding or reading a mutable tag. The caller owns alias authorization and
-publisher concurrency, and must authenticate separately for registry mutations:
-this action's temporary credentials are removed on exit. Direct `image.sh` callers
+The caller owns authorization and publisher concurrency for every configured tag.
+This action's temporary credentials are removed on exit. Direct `image.sh` callers
 without `GITHUB_OUTPUT` retain the existing behavior.
 
 ## Portable Recipe Metadata

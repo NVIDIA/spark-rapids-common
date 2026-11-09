@@ -22,8 +22,8 @@ inputs:
     description: Full approved commit SHA checked out by the caller
     required: true
   image:
-    description: Public prebuilt scanner runtime; a trusted tag or digest with Malcontent 1.28.1
-    default: ghcr.io/nvidia/spark-rapids-common/sonar-script-scan:malcontent-1.28.1
+    description: Public prebuilt scanner runtime compatible with this action
+    default: ghcr.io/nvidia/spark-rapids-common/sonar-script-scan:main
 outputs:
   passed:
     description: True only after complete scanning within the documented source scope

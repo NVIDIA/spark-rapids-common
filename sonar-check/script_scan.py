@@ -41,7 +41,7 @@ MAX_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_REPORT_BYTES = 32 * 1024 * 1024
 RISK_LEVELS = {0: "NONE", 1: "LOW", 2: "MEDIUM", 3: "HIGH", 4: "CRITICAL"}
 
-# The pinned rules also match prefixes such as "| sha224sum". Confirm a complete
+# The scanner rules also match prefixes such as "| sha224sum". Confirm a complete
 # literal shell command in the immutable blob before blocking these indicators.
 DOWNLOAD_PIPE = {"exec/shell/pipe_sh", "c2/tool_transfer/shell"}
 SHELL_PIPE = re.compile(

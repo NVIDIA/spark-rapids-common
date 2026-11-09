@@ -14,7 +14,7 @@ Only the scan's own container is cleaned up after completion or failure.
 
 The policy fails on:
 
-- Critical findings from the pinned scanner.
+- Critical findings from the supported scanner.
 - Download/dropper and shell-pipeline indicators, confirmed by a direct shell
   command in the committed text. Command boundaries distinguish `sh` from
   checksum tools such as `sha224sum`.
@@ -36,7 +36,8 @@ when scanning completes and the policy passes. The hosted runner needs Git,
 Python 3, Docker and access to the public image registry.
 
 `image` defaults to
-`ghcr.io/nvidia/spark-rapids-common/sonar-script-scan:malcontent-1.28.1`.
+`ghcr.io/nvidia/spark-rapids-common/sonar-script-scan:main`.
+Consumers can omit this input; the shared action and image own scanner upgrades.
 Only trusted workflows should set this input; pin the published digest when an
 immutable runtime is required, retaining it with a non-`build-*` tag to protect it
 from cleanup. The action checks the scanner-version label and
@@ -74,12 +75,14 @@ Require `needs: [approve, security]` and
 
 ## Image maintenance
 
-The Dockerfile pins the Malcontent base digest. The existing daily image publisher
-builds `sonar-script-scan` from `.github/image-builds.json` for AMD64 and ARM64,
-checks anonymous pulls and real scanner fixtures, then promotes the version tag.
+The Dockerfile uses the public upstream `malcontent:latest` image. The existing
+daily publisher builds `sonar-script-scan` from `.github/image-builds.json` for
+AMD64 and ARM64, checks the scanner version and real fixtures, then promotes the
+version tag and stable `main` alias to the same anonymously verified image.
 The same catalog includes it in existing image cleanup. The first publication
-must finish before enabling consumers. Version upgrades update the Dockerfile,
-catalog tag, action default and policy compatibility version together.
+must finish before enabling consumers. An unsupported upstream version fails the
+smoke checks before promotion; update the catalog version tag and shared policy
+compatibility version together. The consumer alias stays `main`.
 
 CPU CI builds the proposed Dockerfile locally and tests that image before merge;
 it never publishes PR images. The publisher's `smoke-test.sh` reuses those fixtures.
