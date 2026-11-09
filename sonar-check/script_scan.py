@@ -30,11 +30,8 @@ import tempfile
 import time
 import uuid
 
-IMAGE = (
-    "cgr.dev/chainguard/malcontent@sha256:"
-    "98734fbb8de4510ac4f5b6e820b74e38d5bd528884e579a2c44afa57aeba0fcf"
-)
 SCANNER_VERSION = "1.28.1"
+SCANNER_VERSION_LABEL = "com.nvidia.script-scan.scanner-version"
 DOCKER_HOST = "unix:///var/run/docker.sock"
 OWNER_LABEL = "com.nvidia.script-scan.owner"
 TOOL_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
@@ -261,14 +258,70 @@ def cleanup_container(prefix, name):
         )
 
 
-def scan(snapshot, workdir):
-    prefix = docker_command(workdir)
-    command_output(
-        [*prefix, "pull", "--quiet", IMAGE],
-        limit=1024 * 1024,
-        timeout=180,
-        phase="Scanner image pull",
+def resolve_image(prefix, image, platform=None):
+    """Pull a prebuilt runtime and freeze its local identity for this scan."""
+    require(
+        platform in (None, "linux/amd64", "linux/arm64"),
+        "Unsupported scanner image platform",
     )
+    require(isinstance(image, str), "A prebuilt scanner image is required")
+    local_image = re.fullmatch(r"sha256:[a-f0-9]{64}", image)
+    require(
+        local_image
+        or (
+            not image.startswith("sha256:")
+            and "//" not in image
+            and re.fullmatch(
+                r"[a-zA-Z0-9][a-zA-Z0-9._:/-]*"
+                r"(?::[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}|@sha256:[a-f0-9]{64})",
+                image,
+            )
+        ),
+        "Scanner image must have an explicit tag or digest",
+    )
+    # Immutable local IDs let image validation exercise its build before publication.
+    # The action's registry reference always requires a successful anonymous pull.
+    if not local_image:
+        command_output(
+            [
+                *prefix,
+                "pull",
+                "--quiet",
+                *(["--platform", platform] if platform else []),
+                image,
+            ],
+            limit=1024 * 1024,
+            timeout=180,
+            phase="Scanner image pull",
+        )
+    data = command_output(
+        [*prefix, "image", "inspect", "--format", "{{json .}}", image],
+        limit=64 * 1024,
+        phase="Scanner image inspection",
+    )
+    try:
+        metadata = json.loads(data)
+        identity = metadata["Id"]
+        version = metadata["Config"]["Labels"][SCANNER_VERSION_LABEL]
+    except (ValueError, UnicodeError, TypeError, KeyError) as error:
+        raise ScanError("Scanner image metadata is invalid") from error
+    require(
+        isinstance(identity, str)
+        and re.fullmatch(r"sha256:[a-f0-9]{64}", identity)
+        and version == SCANNER_VERSION,
+        "Scanner image does not match the supported scanner version",
+    )
+    if platform:
+        require(
+            f"{metadata.get('Os')}/{metadata.get('Architecture')}" == platform,
+            "Scanner image does not match the requested platform",
+        )
+    return identity
+
+
+def scan(snapshot, workdir, image, *, platform=None):
+    prefix = docker_command(workdir)
+    identity = resolve_image(prefix, image, platform)
     name = "script-scan-" + uuid.uuid4().hex
     source = str(snapshot.resolve())
     require(
@@ -306,7 +359,10 @@ def scan(snapshot, workdir):
         "/tmp:rw,nosuid,nodev,noexec,size=256m",
         "--mount",
         f"type=bind,source={source},target=/source,readonly",
-        IMAGE,
+        *(["--platform", platform] if platform else []),
+        "--entrypoint",
+        "/usr/bin/mal",
+        identity,
         "--include-data-files",
         "--format",
         "json",
@@ -487,11 +543,11 @@ def summary(result):
     return "\n".join(rows)
 
 
-def run(source, expected, workdir):
+def run(source, expected, workdir, image, *, platform=None):
     sha = checkout_sha(source, expected)
     snapshot = workdir / "source"
     manifest = snapshot_inputs(source, sha, snapshot)
-    findings = evaluate(scan(snapshot, workdir), manifest)
+    findings = evaluate(scan(snapshot, workdir, image, platform=platform), manifest)
     checkout_sha(source, sha)
     return {
         "sha": sha,
@@ -525,10 +581,15 @@ def main():
             "Source must be inside the checkout workspace",
         )
         expected = os.environ.get("INPUT_EXPECTED_SHA", "")
+        image = os.environ.get("INPUT_IMAGE", "")
+        require(
+            not image.startswith("sha256:"),
+            "The action requires a published scanner image tag or digest",
+        )
         with tempfile.TemporaryDirectory(
             prefix="script-scan-", dir=os.environ["RUNNER_TEMP"]
         ) as directory:
-            result = run(source, expected, Path(directory))
+            result = run(source, expected, Path(directory), image)
         report = summary(result)
         print(report)
         if os.environ.get("GITHUB_STEP_SUMMARY"):

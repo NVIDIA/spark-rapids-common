@@ -1,10 +1,10 @@
 # Script security before Sonar
 
 Run this action in a separate **GitHub-hosted Linux job before the internal Sonar
-job**. It reads the approved commit's files as data and scans them with a pinned
-[Malcontent image](https://github.com/chainguard-dev/malcontent). The image contains
-the scanner and rules; the action does not install binaries or fetch rules at run
-time. It never executes source scripts, build tools or plugins.
+job**. It reads the approved commit's files as data and scans them with our prebuilt
+[Malcontent](https://github.com/chainguard-dev/malcontent) runtime. The image contains
+the scanner and rules; the action does not build images, install binaries or fetch
+rules at run time. It never executes source scripts, build tools or plugins.
 
 The scanner container has no network access or credentials. Its source mount and
 root filesystem are read-only, with bounded resources and temporary storage.
@@ -23,9 +23,10 @@ The policy fails on:
   not proof that the credentials flow to the upload.
 
 Other High/Medium findings do not automatically block: benign builds can produce
-those ratings. The image and policy come from the reviewed common action, with no
-PR-controlled suppression settings. Findings show paths and rule IDs, never source
-snippets. Timeouts, tool errors, malformed reports and incomplete scans fail.
+those ratings. The image and policy come from the trusted workflow and common
+action, with no PR-controlled suppression settings. Findings show paths and rule
+IDs, never source snippets. Timeouts, tool errors, malformed reports and incomplete
+scans fail.
 
 ## Inputs and use
 
@@ -33,6 +34,14 @@ snippets. Timeouts, tool errors, malformed reports and incomplete scans fail.
 commit SHA, which must match the checkout. Outputs `passed` and `sha` appear only
 when scanning completes and the policy passes. The hosted runner needs Git,
 Python 3, Docker and access to the public image registry.
+
+`image` defaults to
+`ghcr.io/nvidia/spark-rapids-common/sonar-script-scan:malcontent-1.28.1`.
+Only trusted workflows should set this input; pin the published digest when an
+immutable runtime is required, retaining it with a non-`build-*` tag to protect it
+from cleanup. The action checks the scanner-version label and
+runs the pulled image by its local immutable ID. A missing or incompatible image
+fails the scan, with no local-build fallback.
 
 This fragment belongs in the Sonar workflow after its existing trusted approval
 job. Pin both actions to reviewed full commit SHAs.
@@ -62,6 +71,18 @@ security:
 Require `needs: [approve, security]` and
 `if: ${{ needs.security.result == 'success' }}` on the internal job; check out
 `${{ needs.security.outputs.sha }}` there. No consumer is enabled by this change.
+
+## Image maintenance
+
+The Dockerfile pins the Malcontent base digest. The existing daily image publisher
+builds `sonar-script-scan` from `.github/image-builds.json` for AMD64 and ARM64,
+checks anonymous pulls and real scanner fixtures, then promotes the version tag.
+The same catalog includes it in existing image cleanup. The first publication
+must finish before enabling consumers. Version upgrades update the Dockerfile,
+catalog tag, action default and policy compatibility version together.
+
+CPU CI builds the proposed Dockerfile locally and tests that image before merge;
+it never publishes PR images. The publisher's `smoke-test.sh` reuses those fixtures.
 
 ## Coverage
 

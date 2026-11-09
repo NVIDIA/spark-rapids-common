@@ -119,7 +119,7 @@ jobs:
     needs: select
     if: contains(fromJSON(needs.select.outputs.suites), 'sonar-check')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Checkout PR merge commit
         uses: NVIDIA/spark-rapids-common/checkout@main

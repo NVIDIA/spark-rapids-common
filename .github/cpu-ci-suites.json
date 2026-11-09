@@ -42,7 +42,7 @@
     "sonar-check": {
       "enabled": true,
       "comment": "Sonar script security, collection and reporting tests; service APIs are mocked.",
-      "paths": ["sonar-check/"],
+      "paths": ["sonar-check/", ".github/image-builds.json"],
       "jobs": ["sonar-check"]
     },
     "spark-home": {

@@ -21,6 +21,9 @@ inputs:
   expected-sha:
     description: Full approved commit SHA checked out by the caller
     required: true
+  image:
+    description: Public prebuilt scanner runtime; a trusted tag or digest with Malcontent 1.28.1
+    default: ghcr.io/nvidia/spark-rapids-common/sonar-script-scan:malcontent-1.28.1
 outputs:
   passed:
     description: True only after complete scanning within the documented source scope
@@ -38,4 +41,5 @@ runs:
         SCRIPT_SCAN_ACTION_PATH: ${{ github.action_path }}
         INPUT_SOURCE_DIRECTORY: ${{ inputs.source-directory }}
         INPUT_EXPECTED_SHA: ${{ inputs.expected-sha }}
+        INPUT_IMAGE: ${{ inputs.image }}
       run: python3 -I "$SCRIPT_SCAN_ACTION_PATH/../script_scan.py"

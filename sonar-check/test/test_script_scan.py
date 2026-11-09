@@ -34,6 +34,17 @@ scanner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(scanner)
 
 CLEAN_SCRIPT = "#!/bin/sh\nset -eu\nprintf '%s\\n' 'fixture build'\n"
+TEST_IMAGE = "ghcr.io/nvidia/spark-rapids-common/sonar-script-scan:test"
+IMAGE_ID = "sha256:" + "b" * 64
+
+
+def image_metadata(architecture="amd64"):
+    return {
+        "Id": IMAGE_ID,
+        "Os": "linux",
+        "Architecture": architecture,
+        "Config": {"Labels": {scanner.SCANNER_VERSION_LABEL: scanner.SCANNER_VERSION}},
+    }
 
 
 def behavior(identifier="exec/shell/exec", rule="calls_shell", severity="MEDIUM"):
@@ -214,7 +225,7 @@ class SnapshotTests(GitFixture):
         workdir = self.root / "work"
         workdir.mkdir()
         with patch.object(scanner, "scan", return_value=report(manifest)):
-            outcome = scanner.run(self.source, self.sha, workdir)
+            outcome = scanner.run(self.source, self.sha, workdir, TEST_IMAGE)
         self.assertEqual(outcome["file_count"], 1)
         self.assertEqual(
             outcome["submodules"],
@@ -254,7 +265,7 @@ class SnapshotTests(GitFixture):
                 self.assertIs(manifest[name]["shell_pipe"], expected)
 
     def test_head_change_during_scan_cannot_produce_success(self):
-        def change_head(*_arguments):
+        def change_head(*_arguments, **_options):
             self.write("README.md", "Changed while scan was in progress\n")
             self.commit()
             return {}
@@ -264,7 +275,7 @@ class SnapshotTests(GitFixture):
         with patch.object(scanner, "scan", side_effect=change_head):
             with patch.object(scanner, "evaluate", return_value=[]):
                 with self.assertRaises(scanner.ScanError):
-                    scanner.run(self.source, self.sha, workdir)
+                    scanner.run(self.source, self.sha, workdir, TEST_IMAGE)
 
 
 class PolicyTests(unittest.TestCase):
@@ -520,24 +531,42 @@ class DockerTests(unittest.TestCase):
         self.assertEqual(config, self.root / "docker-config")
         self.assertEqual(config.stat().st_mode & 0o777, 0o700)
 
-    def test_scanner_uses_pinned_image_and_read_only_networkless_container(self):
+    def test_scanner_freezes_image_identity_in_read_only_networkless_container(self):
         calls = []
 
         def execute(command, **options):
             calls.append((command, options))
+            if "inspect" in command:
+                return json.dumps(image_metadata()).encode()
             return b"{}" if "run" in command else b""
 
         with patch.object(scanner, "docker_command", return_value=self.prefix):
             with patch.object(scanner, "command_output", side_effect=execute):
-                self.assertEqual(scanner.scan(self.snapshot, self.root), {})
+                self.assertEqual(
+                    scanner.scan(
+                        self.snapshot, self.root, TEST_IMAGE, platform="linux/amd64"
+                    ),
+                    {},
+                )
         run = next(command for command, _ in calls if "run" in command)
-        self.assertIn("@sha256:", scanner.IMAGE)
-        self.assertIn(scanner.IMAGE, run)
+        self.assertIn(IMAGE_ID, run)
+        self.assertNotIn(TEST_IMAGE, run)
+        self.assertEqual(
+            [command for command, _ in calls if "pull" in command],
+            [
+                self.prefix
+                + ["pull", "--quiet", "--platform", "linux/amd64", TEST_IMAGE]
+            ],
+        )
+        self.assertEqual(sum("inspect" in command for command, _ in calls), 1)
         for flag, value in (
+            ("--pull", "never"),
+            ("--platform", "linux/amd64"),
             ("--network", "none"),
             ("--cap-drop", "ALL"),
             ("--security-opt", "no-new-privileges"),
             ("--user", "65532:65532"),
+            ("--entrypoint", "/usr/bin/mal"),
             ("--format", "json"),
         ):
             self.assertEqual(run[run.index(flag) + 1], value)
@@ -556,6 +585,109 @@ class DockerTests(unittest.TestCase):
         self.assertNotIn("--privileged", run)
         self.assertTrue(all(options.get("timeout", 1) > 0 for _, options in calls))
 
+    def test_local_image_ids_skip_pull_but_still_verify_version_and_platform(self):
+        with patch.object(
+            scanner,
+            "command_output",
+            return_value=json.dumps(image_metadata("arm64")).encode(),
+        ) as execute:
+            self.assertEqual(
+                scanner.resolve_image(self.prefix, IMAGE_ID, "linux/arm64"), IMAGE_ID
+            )
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(
+            execute.call_args.args[0],
+            self.prefix + ["image", "inspect", "--format", "{{json .}}", IMAGE_ID],
+        )
+
+    def test_registry_digest_requires_a_successful_pull(self):
+        reference = TEST_IMAGE.split(":")[0] + "@sha256:" + "c" * 64
+        with patch.object(
+            scanner,
+            "command_output",
+            side_effect=[b"", json.dumps(image_metadata()).encode()],
+        ) as execute:
+            self.assertEqual(scanner.resolve_image(self.prefix, reference), IMAGE_ID)
+        self.assertEqual(
+            execute.call_args_list[0].args[0],
+            self.prefix + ["pull", "--quiet", reference],
+        )
+        with patch.object(scanner, "docker_command", return_value=self.prefix):
+            with patch.object(
+                scanner,
+                "command_output",
+                side_effect=scanner.ScanError("Scanner image pull failed"),
+            ) as execute:
+                with self.assertRaises(scanner.ScanError):
+                    scanner.scan(self.snapshot, self.root, reference)
+        execute.assert_called_once()
+        self.assertIn("pull", execute.call_args.args[0])
+
+    def test_malformed_references_and_unsupported_platforms_fail_before_docker(self):
+        for reference in (
+            "",
+            None,
+            "ghcr.io/nvidia/scanner",
+            "ghcr.io/nvidia/scanner:",
+            "ghcr.io/nvidia/scanner@sha256:abc",
+            "--privileged",
+            "ghcr.io/nvidia/scanner:test\n--privileged",
+            "https://ghcr.io/nvidia/scanner:test",
+            "sha256:abc",
+        ):
+            with self.subTest(reference=reference):
+                with patch.object(scanner, "command_output") as execute:
+                    with self.assertRaises(scanner.ScanError):
+                        scanner.resolve_image(self.prefix, reference)
+                execute.assert_not_called()
+        with patch.object(scanner, "command_output") as execute:
+            with self.assertRaises(scanner.ScanError):
+                scanner.resolve_image(self.prefix, TEST_IMAGE, "linux/s390x")
+        execute.assert_not_called()
+
+    def test_invalid_image_identity_and_scanner_labels_fail_before_run(self):
+        invalid = [None, [], {}, {"Id": IMAGE_ID, "Config": {"Labels": None}}]
+        for field, value in (("Id", TEST_IMAGE), ("Config", {"Labels": {}})):
+            metadata = image_metadata()
+            metadata[field] = value
+            invalid.append(metadata)
+        metadata = image_metadata()
+        metadata["Config"]["Labels"][scanner.SCANNER_VERSION_LABEL] = "unreviewed"
+        invalid.append(metadata)
+        for metadata in invalid:
+            with self.subTest(metadata=metadata):
+                with patch.object(scanner, "docker_command", return_value=self.prefix):
+                    with patch.object(
+                        scanner,
+                        "command_output",
+                        return_value=json.dumps(metadata).encode(),
+                    ) as execute:
+                        with self.assertRaises(scanner.ScanError):
+                            scanner.scan(self.snapshot, self.root, IMAGE_ID)
+                self.assertFalse(
+                    any("run" in call.args[0] for call in execute.call_args_list)
+                )
+
+    def test_platform_mismatch_or_missing_architecture_fails_before_run(self):
+        for architecture in ("arm64", None):
+            with self.subTest(architecture=architecture):
+                with patch.object(scanner, "docker_command", return_value=self.prefix):
+                    with patch.object(
+                        scanner,
+                        "command_output",
+                        return_value=json.dumps(image_metadata(architecture)).encode(),
+                    ) as execute:
+                        with self.assertRaises(scanner.ScanError):
+                            scanner.scan(
+                                self.snapshot,
+                                self.root,
+                                IMAGE_ID,
+                                platform="linux/amd64",
+                            )
+                self.assertFalse(
+                    any("run" in call.args[0] for call in execute.call_args_list)
+                )
+
     def test_timeout_and_cancellation_still_cleanup_only_owned_container(self):
         for failure in (subprocess.TimeoutExpired("docker", 1), KeyboardInterrupt()):
             calls = []
@@ -563,6 +695,8 @@ class DockerTests(unittest.TestCase):
 
             def execute(command, **_options):
                 calls.append(command)
+                if "inspect" in command:
+                    return json.dumps(image_metadata()).encode()
                 if "run" in command:
                     raise failure
                 if "ls" in command:
@@ -573,7 +707,7 @@ class DockerTests(unittest.TestCase):
                 with patch.object(scanner, "docker_command", return_value=self.prefix):
                     with patch.object(scanner, "command_output", side_effect=execute):
                         with self.assertRaises(type(failure)):
-                            scanner.scan(self.snapshot, self.root)
+                            scanner.scan(self.snapshot, self.root, TEST_IMAGE)
                 run = next(command for command in calls if "run" in command)
                 name = run[run.index("--name") + 1]
                 listing = next(command for command in calls if "ls" in command)
@@ -596,20 +730,22 @@ class DockerTests(unittest.TestCase):
 
     def test_invalid_json_and_cleanup_failure_cannot_produce_a_pass(self):
         def execute(command, **_options):
+            if "inspect" in command:
+                return json.dumps(image_metadata()).encode()
             return b"not-json" if "run" in command else b""
 
         with patch.object(scanner, "docker_command", return_value=self.prefix):
             with patch.object(scanner, "command_output", side_effect=execute):
                 with self.assertRaises(scanner.ScanError):
-                    scanner.scan(self.snapshot, self.root)
-            with patch.object(scanner, "command_output", return_value=b"{}"):
+                    scanner.scan(self.snapshot, self.root, TEST_IMAGE)
+            with patch.object(scanner, "command_output", side_effect=execute):
                 with patch.object(
                     scanner,
                     "cleanup_container",
                     side_effect=scanner.ScanError("Cleanup failed"),
                 ):
-                    with self.assertRaises(scanner.ScanError):
-                        scanner.scan(self.snapshot, self.root)
+                    with self.assertRaisesRegex(scanner.ScanError, "Cleanup failed"):
+                        scanner.scan(self.snapshot, self.root, TEST_IMAGE)
 
 
 class EntrypointTests(GitFixture):
@@ -623,6 +759,7 @@ class EntrypointTests(GitFixture):
             "RUNNER_TEMP": str(self.root),
             "INPUT_SOURCE_DIRECTORY": ".",
             "INPUT_EXPECTED_SHA": self.sha,
+            "INPUT_IMAGE": TEST_IMAGE,
             "GITHUB_OUTPUT": str(self.output),
             "GITHUB_STEP_SUMMARY": str(self.summary),
         }
@@ -636,12 +773,20 @@ class EntrypointTests(GitFixture):
         return code, stdout.getvalue()
 
     def test_success_outputs_are_bound_to_the_verified_commit(self):
-        with patch.object(scanner, "run", return_value=result(self.sha)):
+        with patch.object(scanner, "run", return_value=result(self.sha)) as run:
             code, _ = self.main(INPUT_EXPECTED_SHA=self.sha.upper())
         self.assertEqual(code, 0)
+        self.assertEqual(run.call_args.args[3], TEST_IMAGE)
         self.assertIn(f"sha={self.sha}\n", self.output.read_text())
         self.assertIn("passed=true\n", self.output.read_text())
         self.assertIn("PASS", self.summary.read_text())
+
+    def test_public_action_rejects_local_image_ids_before_scanning(self):
+        with patch.object(scanner, "run") as run:
+            code, _ = self.main(INPUT_IMAGE=IMAGE_ID)
+        self.assertEqual(code, 1)
+        self.assertFalse(self.output.exists())
+        run.assert_not_called()
 
     def test_findings_block_and_never_create_success_outputs(self):
         findings = [
@@ -695,7 +840,7 @@ class EntrypointTests(GitFixture):
 
 @unittest.skipUnless(
     os.environ.get("SONAR_SCRIPT_SCAN_REAL_IMAGE") == "1",
-    "Enable the pinned image smoke tests explicitly",
+    "Enable the owned image smoke tests explicitly",
 )
 class RealImageTests(GitFixture):
     @classmethod
@@ -705,12 +850,77 @@ class RealImageTests(GitFixture):
             text=True,
             timeout=15,
         ).strip()
+        cls.platform = os.environ.get("SONAR_SCRIPT_SCAN_TEST_PLATFORM") or None
+        docker = ["docker", "--host", cls.docker_host]
+        platform_options = ["--platform", cls.platform] if cls.platform else []
+        supplied_image = os.environ.get("SONAR_SCRIPT_SCAN_TEST_IMAGE")
+        if supplied_image:
+            # The publisher already built or pulled this reference for the platform.
+            # Freeze its local identity so pre-publication tags need no registry pull.
+            cls.image = subprocess.check_output(
+                [*docker, "image", "inspect", "--format", "{{.Id}}", supplied_image],
+                text=True,
+                timeout=30,
+            ).strip()
+        else:
+            repository = Path(__file__).resolve().parents[2]
+            catalog = json.loads((repository / ".github/image-builds.json").read_text())
+            recipe = catalog["sonar-script-scan"]
+            with tempfile.TemporaryDirectory(prefix="script-scan-image-") as directory:
+                image_id_file = Path(directory) / "image-id"
+                subprocess.run(
+                    [
+                        *docker,
+                        "build",
+                        "--pull",
+                        "--iidfile",
+                        str(image_id_file),
+                        "--file",
+                        str(repository / recipe["dockerfile"]),
+                        *platform_options,
+                        str(repository / recipe["context"]),
+                    ],
+                    check=True,
+                    timeout=300,
+                )
+                cls.image = image_id_file.read_text().strip()
+        version = subprocess.check_output(
+            [
+                *docker,
+                "run",
+                "--rm",
+                "--pull",
+                "never",
+                "--network",
+                "none",
+                "--read-only",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--user",
+                "65532:65532",
+                *platform_options,
+                "--entrypoint",
+                "/usr/bin/mal",
+                cls.image,
+                "--version",
+            ],
+            text=True,
+            timeout=30,
+        ).strip()
+        if version != f"malcontent version v{scanner.SCANNER_VERSION}":
+            raise AssertionError(
+                "Built image scanner version does not match the policy"
+            )
 
     def audit(self):
         workdir = self.root / "work"
         workdir.mkdir()
         with patch.object(scanner, "DOCKER_HOST", self.docker_host):
-            return scanner.run(self.source, self.sha, workdir)
+            return scanner.run(
+                self.source, self.sha, workdir, self.image, platform=self.platform
+            )
 
     def test_clean_snapshot_includes_xml_hidden_and_empty_files(self):
         self.write("pom.xml", "<project><modelVersion>4.0.0</modelVersion></project>\n")
