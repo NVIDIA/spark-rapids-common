@@ -13,7 +13,7 @@
 # limitations under the License.
 
 name: GHCR cleanup
-description: Retire old build-only image versions while preserving live aliases and manifest dependencies
+description: Retire old build-only versions and unreferenced manifests while preserving live image dependencies
 inputs:
   package:
     description: Container package name without owner, such as my-project/build-image
@@ -37,7 +37,7 @@ inputs:
     description: Minimum age since both creation and last update
     default: '7'
   keep-latest:
-    description: Retain at least this many newest matching versions regardless of age
+    description: Retain at least this many newest matching tagged versions regardless of age
     default: '0'
   max-delete:
     description: Maximum versions to delete in one invocation

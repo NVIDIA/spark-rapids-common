@@ -38,12 +38,13 @@ const env = {
 function fixture() {
   const f = {versions: [], manifests: new Map(), requests: [], fetched: [], outputs: {}, logs: [],
     options: optionsFromEnv(env), waits: [], listReads: 0};
-  f.add = (id, tags, modified = old, children) => {
+  f.add = (id, tags, modified = old, children, subject) => {
     const manifest = children ? {schemaVersion: 2, mediaType: indexType,
       manifests: children.map(digest => ({digest, mediaType: imageType, size: 100}))} :
       {schemaVersion: 2, mediaType: imageType, config: {digest: sha(`config-${id}`)}, layers: []};
     // Distinct leaf manifests without relying on registry state.
     if (!children) manifest.annotations = {fixture: String(id)};
+    if (subject) manifest.subject = {digest: subject};
     const text = JSON.stringify(manifest);
     const digest = sha(text);
     f.manifests.set(digest, text);
@@ -105,7 +106,7 @@ test('deletion requires every tag to match; live main, release, v1 and cache ali
   for (const [i, tag] of ['main-cuda13', '26.10-cuda12', 'v1', 'cache-amd64'].entries()) {
     f.add(i + 2, ['build-shared', tag]);
   }
-  f.add(6, []);
+  f.add(6, [], recent);
   await f.run();
   assert.deepEqual(f.deletes(), ['DELETE /orgs/test-org/packages/container/project%2Fbuild-image/versions/1']);
   assert.equal(f.listReads, 2);
@@ -203,10 +204,10 @@ test('retained indexes protect transitive platform and attestation manifests reg
   assert.equal(f.fetched.filter(url => url.includes('/manifests/')).length, 5);
 });
 
-test('retained untagged indexes also protect tagged descendants', async () => {
+test('recent untagged indexes also protect older tagged descendants', async () => {
   const f = fixture();
   const child = f.add(1, ['build-child']);
-  f.add(2, [], old, [child]);
+  f.add(2, [], recent, [child]);
   await f.run();
   assert.equal(f.outputs.candidates, 0);
 });
@@ -214,11 +215,165 @@ test('retained untagged indexes also protect tagged descendants', async () => {
 test('complete pagination includes protected tags on later pages', async () => {
   const f = fixture();
   const child = f.add(1, ['build-old']);
-  for (let id = 2; id <= 100; id++) f.add(id, []);
+  for (let id = 2; id <= 100; id++) f.add(id, [], recent);
   f.add(101, ['main'], old, [child]);
   await f.run();
   assert.equal(f.listReads, 2);
   assert.equal(f.outputs.candidates, 0);
+});
+
+test('old untagged orphans are reported and deleted, but recent or updated ones remain', async () => {
+  const f = fixture();
+  f.add(1, []);
+  f.add(2, [], recent);
+  f.add(3, []); f.versions.at(-1).updated_at = recent;
+  f.add(4, [], new Date(now - 7 * 86400000).toISOString());
+  await f.run();
+  assert.equal(f.outputs.candidates, 1);
+  assert.match(f.logs.join('\n'), /Candidate 1: .* \[untagged\]/);
+  assert.equal(f.deletes().length, 0);
+  f.options.dryRun = false;
+  await f.run();
+  assert.deepEqual(f.deletes().map(route => Number(route.split('/').pop())), [1]);
+});
+
+test('multi-platform cleanup respects every capped prefix and eventually removes orphan children', async () => {
+  for (const limit of [1, 2, 3, 4, 5, 20]) {
+    const f = fixture(); f.options.limit = limit; f.options.dryRun = false;
+    const amd64 = f.add(1, []);
+    const arm64 = f.add(2, []);
+    const amd64Attestation = f.add(3, [], old, undefined, amd64);
+    const arm64Attestation = f.add(4, [], old, undefined, arm64);
+    f.add(5, ['build-old'], old, [amd64, arm64, amd64Attestation, arm64Attestation]);
+    f.onRequest = route => {
+      if (!route.startsWith('DELETE ')) return;
+      const id = Number(route.split('/').pop());
+      const digest = f.versions.find(v => v.id === id).name;
+      for (const version of f.versions) {
+        const manifest = JSON.parse(f.manifests.get(version.name));
+        assert.notEqual(manifest.subject?.digest, digest);
+        assert.ok(!manifest.manifests?.some(child => child.digest === digest));
+      }
+      f.versions = f.versions.filter(v => v.id !== id);
+      return {status: 204};
+    };
+    let runs = 0;
+    while (f.versions.length) {
+      assert.ok(++runs <= 5);
+      await f.run();
+      assert.ok(f.outputs.deleted > 0 && f.outputs.deleted <= limit);
+    }
+    assert.equal(f.deletes().length, 5);
+    assert.match(f.deletes()[0], /\/5$/);
+    if (limit >= 5) assert.equal(runs, 1);
+  }
+});
+
+test('shared untagged platforms and attestations survive deleting an obsolete index', async () => {
+  const f = fixture(); f.options.dryRun = false;
+  const platform = f.add(1, []);
+  const attestation = f.add(2, [], old, undefined, platform);
+  f.add(3, ['build-obsolete'], old, [platform, attestation]);
+  const retained = f.add(4, [], old, [attestation, platform]);
+  f.add(5, ['v1'], old, [retained]);
+  await f.run();
+  assert.deepEqual(f.deletes().map(route => Number(route.split('/').pop())), [3]);
+});
+
+test('untagged versions do not consume keep-latest and kept build dependencies survive', async () => {
+  const f = fixture(); f.options.keep = 1; f.options.dryRun = false;
+  f.add(1, ['build-oldest']);
+  const child = f.add(2, []);
+  f.add(3, ['build-newest'], old, [child]);
+  f.add(4, [], new Date(now - 8 * 86400000).toISOString());
+  await f.run();
+  assert.deepEqual(f.deletes().map(route => Number(route.split('/').pop())), [1, 4]);
+});
+
+test('protected untagged digests protect their full graph even outside the package inventory', async () => {
+  for (const inInventory of [true, false]) {
+    const f = fixture(); f.options.dryRun = false;
+    const leaf = f.add(1, []);
+    const attestation = f.add(2, [], old, undefined, leaf);
+    const nested = f.add(3, [], old, [leaf, attestation]);
+    const root = f.add(4, [], old, [nested]);
+    f.options.protectedDigests = [root];
+    if (!inInventory) f.versions = f.versions.filter(v => v.id !== 4);
+    f.add(5, []);
+    await f.run();
+    assert.deepEqual(f.deletes().map(route => Number(route.split('/').pop())), [5]);
+  }
+});
+
+test('a recent attestation retains its old untagged subject', async () => {
+  const f = fixture();
+  const subject = f.add(1, []);
+  f.add(2, [], recent, undefined, subject);
+  await f.run();
+  assert.equal(f.outputs.candidates, 0);
+});
+
+test('retained subjects keep detached OCI referrers and their transitive attachments', async () => {
+  for (const policy of ['live-tag', 'protected-digest', 'keep-latest', 'recent']) {
+    const f = fixture(); f.options.dryRun = false;
+    const tags = policy === 'live-tag' ? ['v1'] : policy === 'keep-latest' ? ['build-last'] : [];
+    const subject = f.add(1, tags, policy === 'recent' ? recent : old);
+    if (policy === 'protected-digest') f.options.protectedDigests = [subject];
+    if (policy === 'keep-latest') f.options.keep = 1;
+    const attestation = f.add(2, [], old, undefined, subject);
+    f.add(3, [], old, undefined, attestation);
+    f.add(4, []);
+    await f.run();
+    assert.deepEqual(f.deletes().map(route => Number(route.split('/').pop())), [4], policy);
+  }
+});
+
+test('detached referrers of an orphaned subject are deleted before that subject', async () => {
+  const f = fixture(); f.options.dryRun = false;
+  const subject = f.add(1, []);
+  f.add(2, [], old, undefined, subject);
+  await f.run();
+  assert.deepEqual(f.deletes().map(route => Number(route.split('/').pop())), [2, 1]);
+});
+
+test('capped retirement of an expired build removes its detached referrer before the image', async () => {
+  const f = fixture(); f.options.dryRun = false; f.options.limit = 1;
+  const subject = f.add(1, ['build-expired']);
+  f.add(2, [], old, undefined, subject);
+  await f.run();
+  assert.deepEqual(f.deletes().map(route => Number(route.split('/').pop())), [2]);
+  f.versions = f.versions.filter(v => v.id !== 2);
+  await f.run();
+  assert.deepEqual(f.deletes().map(route => Number(route.split('/').pop())), [2, 1]);
+});
+
+test('a failed parent DELETE stops before any dependent untagged manifest', async () => {
+  for (const failedId of [3, 2]) {
+    const f = fixture(); f.options.dryRun = false;
+    const platform = f.add(1, []);
+    const attestation = f.add(2, [], old, undefined, platform);
+    f.add(3, ['build-index'], old, [platform, attestation]);
+    f.onRequest = route => {
+      if (!route.startsWith('DELETE ')) return;
+      const id = Number(route.split('/').pop());
+      if (id === failedId) throw new Error('uncertain DELETE');
+      f.versions = f.versions.filter(v => v.id !== id);
+      return {status: 204};
+    };
+    await assert.rejects(f.run(), /not retried/);
+    assert.deepEqual(f.deletes().map(route => Number(route.split('/').pop())),
+      failedId === 3 ? [3] : [3, 2]);
+    assert.ok(f.versions.some(v => v.id === 1));
+  }
+});
+
+test('retagging an untagged candidate stops its immediate pre-delete check', async () => {
+  const f = fixture(); f.options.dryRun = false; f.add(1, []);
+  f.onRequest = route => {
+    if (route.startsWith('GET ') && route.endsWith('/1')) f.versions[0].metadata.container.tags.push('v1');
+  };
+  await assert.rejects(f.run(), /Version 1 changed/);
+  assert.equal(f.deletes().length, 0);
 });
 
 test('duplicate/incomplete metadata fails closed before deletion', async () => {
