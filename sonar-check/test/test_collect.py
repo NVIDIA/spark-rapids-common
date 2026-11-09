@@ -326,7 +326,13 @@ class CollectionTests(unittest.TestCase):
     def test_unavailable_or_malformed_issues_do_not_replace_exact_gate(self):
         for response in (
             RuntimeError("RAW_RESPONSE_MUST_NOT_LEAK"),
-            {"paging": {"total": 1}, "issues": [dict(issue(), component="other:file")]},
+            *(
+                {
+                    "paging": {"total": 1},
+                    "issues": [dict(issue(), component=component)],
+                }
+                for component in ("other", "other:file", "project-other:file")
+            ),
             *(
                 {
                     "paging": {"total": 1},
@@ -347,6 +353,27 @@ class CollectionTests(unittest.TestCase):
             self.assertTrue(evidence["passed"])
             self.assertFalse(evidence["detailsComplete"])
             self.assertNotIn("RAW_RESPONSE", json.dumps(evidence))
+
+    def test_project_and_file_details_are_preserved_without_changing_gate(self):
+        sonar = FakeSonar()
+        sonar.issue_pages = [
+            {
+                "paging": {"total": 2},
+                "issues": [
+                    dict(issue("project-issue"), component="project", line=None),
+                    issue("file-issue"),
+                ],
+            }
+        ]
+        evidence = self.collect(sonar)
+        self.assertTrue(evidence["complete"] and evidence["passed"])
+        self.assertEqual((evidence["high"], evidence["blocker"]), (0, 0))
+        self.assertTrue(evidence["detailsComplete"])
+        self.assertEqual(evidence["totalIssues"], 2)
+        self.assertEqual(
+            [(row["key"], row["path"], row["line"]) for row in evidence["issues"]],
+            [("project-issue", "", None), ("file-issue", "src/a.py", 7)],
+        )
 
     def test_top_ten_details_and_medium_does_not_fail(self):
         sonar = FakeSonar()

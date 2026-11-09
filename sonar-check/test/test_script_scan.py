@@ -598,10 +598,10 @@ class DockerTests(unittest.TestCase):
         with patch.object(
             scanner,
             "command_output",
-            return_value=json.dumps(image_metadata("arm64")).encode(),
+            return_value=json.dumps(image_metadata()).encode(),
         ) as execute:
             self.assertEqual(
-                scanner.resolve_image(self.prefix, IMAGE_ID, "linux/arm64"), IMAGE_ID
+                scanner.resolve_image(self.prefix, IMAGE_ID, "linux/amd64"), IMAGE_ID
             )
         self.assertEqual(execute.call_count, 1)
         self.assertEqual(
@@ -702,10 +702,12 @@ class DockerTests(unittest.TestCase):
                     with self.assertRaises(scanner.ScanError):
                         scanner.resolve_image(self.prefix, reference)
                 execute.assert_not_called()
-        with patch.object(scanner, "command_output") as execute:
-            with self.assertRaises(scanner.ScanError):
-                scanner.resolve_image(self.prefix, TEST_IMAGE, "linux/s390x")
-        execute.assert_not_called()
+        for platform in ("linux/arm64", "linux/s390x"):
+            with self.subTest(platform=platform):
+                with patch.object(scanner, "command_output") as execute:
+                    with self.assertRaises(scanner.ScanError):
+                        scanner.resolve_image(self.prefix, TEST_IMAGE, platform)
+                execute.assert_not_called()
 
     def test_invalid_image_identity_and_scanner_labels_fail_before_run(self):
         invalid = [None, [], {}, {"Id": IMAGE_ID, "Config": {"Labels": None}}]
@@ -742,8 +744,13 @@ class DockerTests(unittest.TestCase):
                 )
 
     def test_platform_mismatch_or_missing_architecture_fails_before_run(self):
-        for architecture in ("arm64", None):
-            with self.subTest(architecture=architecture):
+        for architecture, platform in (
+            ("s390x", None),
+            ("s390x", "linux/amd64"),
+            (None, None),
+            (None, "linux/amd64"),
+        ):
+            with self.subTest(architecture=architecture, platform=platform):
                 with patch.object(scanner, "docker_command", return_value=self.prefix):
                     with patch.object(
                         scanner,
@@ -755,7 +762,7 @@ class DockerTests(unittest.TestCase):
                                 self.snapshot,
                                 self.root,
                                 IMAGE_ID,
-                                platform="linux/amd64",
+                                platform=platform,
                             )
                 self.assertFalse(
                     any("run" in call.args[0] for call in execute.call_args_list)
@@ -765,15 +772,19 @@ class DockerTests(unittest.TestCase):
         for failure in (subprocess.TimeoutExpired("docker", 1), KeyboardInterrupt()):
             calls = []
             container_id = "c" * 64
+            removed = False
 
             def execute(command, **_options):
+                nonlocal removed
                 calls.append(command)
                 if "inspect" in command:
                     return json.dumps(image_metadata()).encode()
                 if "run" in command:
                     raise failure
                 if "ls" in command:
-                    return (container_id + "\n").encode()
+                    return b"" if removed else (container_id + "\n").encode()
+                if "rm" in command:
+                    removed = True
                 return b""
 
             with self.subTest(failure=type(failure).__name__):
@@ -788,6 +799,88 @@ class DockerTests(unittest.TestCase):
                 removals = [command for command in calls if "rm" in command]
                 self.assertEqual(len(removals), 1)
                 self.assertEqual(removals[0][-1], container_id)
+
+    def test_interrupted_creation_waits_for_owned_container_and_verifies_removal(self):
+        container_id = "c" * 64
+        for final_inventory in (b"", (container_id + "\n").encode()):
+            with self.subTest(final_inventory=final_inventory):
+                with patch.object(scanner.time, "sleep"):
+                    with patch.object(
+                        scanner,
+                        "command_output",
+                        side_effect=[
+                            b"",
+                            (container_id + "\n").encode(),
+                            b"",
+                            final_inventory,
+                        ],
+                    ) as execute:
+                        if final_inventory:
+                            with self.assertRaisesRegex(
+                                scanner.ScanError, "removal could not be confirmed"
+                            ):
+                                scanner.cleanup_container(
+                                    self.prefix,
+                                    "script-scan-test",
+                                    wait_for_creation=True,
+                                )
+                        else:
+                            scanner.cleanup_container(
+                                self.prefix, "script-scan-test", wait_for_creation=True
+                            )
+                removals = [
+                    call.args[0]
+                    for call in execute.call_args_list
+                    if "rm" in call.args[0]
+                ]
+                self.assertEqual(
+                    removals,
+                    [self.prefix + ["container", "rm", "--force", container_id]],
+                )
+
+    def test_never_visible_creation_has_bounded_unconfirmed_cleanup(self):
+        with patch.object(scanner.time, "monotonic", side_effect=[0, 0, 2, 2]):
+            with patch.object(scanner.time, "sleep"):
+                with patch.object(
+                    scanner, "command_output", return_value=b""
+                ) as execute:
+                    with self.assertRaisesRegex(scanner.ScanError, "unconfirmed"):
+                        scanner.cleanup_container(
+                            self.prefix, "script-scan-test", wait_for_creation=True
+                        )
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(execute.call_args.kwargs["timeout"], 2)
+        self.assertNotIn("rm", execute.call_args.args[0])
+
+    def test_cleanup_failure_preserves_original_analysis_error_or_cancellation(self):
+        for failure in (scanner.ScanError("Analysis timed out"), KeyboardInterrupt()):
+            output = io.StringIO()
+
+            def execute(command, **_options):
+                if "inspect" in command:
+                    return json.dumps(image_metadata()).encode()
+                if "run" in command:
+                    raise failure
+                return b""
+
+            with self.subTest(failure=type(failure).__name__):
+                with patch.object(scanner, "docker_command", return_value=self.prefix):
+                    with patch.object(scanner, "command_output", side_effect=execute):
+                        with patch.object(
+                            scanner,
+                            "cleanup_container",
+                            side_effect=scanner.ScanError("PRIVATE_DIAGNOSTIC"),
+                        ) as cleanup:
+                            with contextlib.redirect_stdout(output):
+                                with self.assertRaises(type(failure)) as caught:
+                                    scanner.scan(self.snapshot, self.root, TEST_IMAGE)
+                self.assertIs(caught.exception, failure)
+                self.assertTrue(cleanup.call_args.kwargs["wait_for_creation"])
+                self.assertIn(
+                    "Cleanup remains unconfirmed for scan container script-scan-",
+                    output.getvalue(),
+                )
+                self.assertNotIn("PRIVATE", output.getvalue())
 
     def test_ambiguous_or_invalid_cleanup_identity_never_removes_anything(self):
         for listing in (b"a\nb\n", b"not-a-container-id\n"):
@@ -923,7 +1016,11 @@ class RealImageTests(GitFixture):
             text=True,
             timeout=15,
         ).strip()
-        cls.platform = os.environ.get("SONAR_SCRIPT_SCAN_TEST_PLATFORM") or None
+        cls.platform = (
+            os.environ.get("SONAR_SCRIPT_SCAN_TEST_PLATFORM") or "linux/amd64"
+        )
+        if cls.platform != "linux/amd64":
+            raise AssertionError("The scanner image only supports linux/amd64")
         docker = ["docker", "--host", cls.docker_host]
         platform_options = ["--platform", cls.platform] if cls.platform else []
         supplied_image = os.environ.get("SONAR_SCRIPT_SCAN_TEST_IMAGE")

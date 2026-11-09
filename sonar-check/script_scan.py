@@ -223,8 +223,8 @@ def docker_command(workdir):
     return [binary, "--config", str(config), "--host", DOCKER_HOST]
 
 
-def cleanup_container(prefix, name):
-    """Remove only containers carrying this invocation's random ownership label."""
+def owned_container(prefix, name, timeout=15):
+    """Identify at most one container carrying this invocation's random label."""
     listing = (
         command_output(
             [
@@ -239,30 +239,55 @@ def cleanup_container(prefix, name):
                 "{{.ID}}",
             ],
             limit=4096,
-            timeout=15,
+            timeout=timeout,
             phase="Scan container inventory",
         )
         .decode()
         .splitlines()
     )
     require(len(listing) <= 1, "Could not establish unique scan-container ownership")
-    for container_id in listing:
+    if listing:
+        container_id = listing[0]
         require(
             re.fullmatch(r"[a-f0-9]{64}", container_id),
             "Invalid scan-container identity",
         )
-        command_output(
-            [*prefix, "container", "rm", "--force", container_id],
-            limit=4096,
-            timeout=15,
-            phase="Scan container cleanup",
+        return container_id
+    return None
+
+
+def cleanup_container(prefix, name, wait_for_creation=False):
+    """Remove only this scan's container, allowing brief delayed create visibility."""
+    deadline = time.monotonic() + 2 if wait_for_creation else None
+    while True:
+        remaining = deadline - time.monotonic() if deadline is not None else 15
+        require(
+            remaining > 0,
+            "Interrupted container creation never became visible; cleanup is unconfirmed",
         )
+        container_id = owned_container(prefix, name, timeout=min(15, remaining))
+        if container_id:
+            command_output(
+                [*prefix, "container", "rm", "--force", container_id],
+                limit=4096,
+                timeout=15,
+                phase="Scan container cleanup",
+            )
+            if wait_for_creation:
+                require(
+                    owned_container(prefix, name, timeout=2) is None,
+                    "Scan container removal could not be confirmed",
+                )
+            return
+        if deadline is None:
+            return
+        time.sleep(min(0.2, max(0, deadline - time.monotonic())))
 
 
 def resolve_image(prefix, image, platform=None):
     """Pull a prebuilt runtime and freeze its local identity for this scan."""
     require(
-        platform in (None, "linux/amd64", "linux/arm64"),
+        platform in (None, "linux/amd64"),
         "Unsupported scanner image platform",
     )
     require(isinstance(image, str), "A prebuilt scanner image is required")
@@ -315,11 +340,10 @@ def resolve_image(prefix, image, platform=None):
         and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version),
         "Scanner image does not match the supported contract or version metadata",
     )
-    if platform:
-        require(
-            f"{metadata.get('Os')}/{metadata.get('Architecture')}" == platform,
-            "Scanner image does not match the requested platform",
-        )
+    require(
+        f"{metadata.get('Os')}/{metadata.get('Architecture')}" == "linux/amd64",
+        "Scanner image must target linux/amd64",
+    )
     return identity
 
 
@@ -392,7 +416,15 @@ def scan(snapshot, workdir, image, *, platform=None):
     ]
     try:
         data = command_output(command, timeout=180, phase="Scanner analysis")
-    finally:
+    except BaseException:
+        # A killed CLI can leave an accepted Docker create request still in flight.
+        # Never retry creation; reconcile only this invocation and keep its failure.
+        try:
+            cleanup_container(prefix, name, wait_for_creation=True)
+        except Exception:
+            print(f"::warning::Cleanup remains unconfirmed for scan container {name}")
+        raise
+    else:
         cleanup_container(prefix, name)
     try:
         return json.loads(data)

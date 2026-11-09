@@ -17,6 +17,7 @@ set -euo pipefail
 
 reference=${1:?Image reference is required}
 platform=${2:?Image platform is required}
+[[ "$platform" == linux/amd64 ]]
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # Exercise the real policy with harmless fixtures; none of their commands execute.

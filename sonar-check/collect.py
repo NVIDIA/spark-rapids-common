@@ -198,10 +198,11 @@ def issue_details(sonar, result):
             prefix = result["project"] + ":"
             component = issue["component"]
             require(
-                isinstance(component, str) and component.startswith(prefix),
+                isinstance(component, str)
+                and (component == result["project"] or component.startswith(prefix)),
                 "Unexpected issue component",
             )
-            path = component[len(prefix) :]
+            path = "" if component == result["project"] else component[len(prefix) :]
             require(
                 safe_text(path, 2048, empty=True)
                 and (

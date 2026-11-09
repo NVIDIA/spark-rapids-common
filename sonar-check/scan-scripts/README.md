@@ -1,10 +1,10 @@
 # Script security before Sonar
 
-Run this action in a separate **GitHub-hosted Linux job before the internal Sonar
-job**. It reads the approved commit's files as data and scans them with our prebuilt
-[Malcontent](https://github.com/chainguard-dev/malcontent) runtime. The image contains
-the scanner and rules; the action does not build images, install binaries or fetch
-rules at run time. It never executes source scripts, build tools or plugins.
+Run this action in a separate **GitHub-hosted AMD64 Linux job before the internal
+Sonar job**. It reads the approved commit's files as data and scans them with our
+prebuilt [Malcontent](https://github.com/chainguard-dev/malcontent) runtime. The image
+contains the scanner and rules; the action does not build images, install binaries
+or fetch rules at run time. It never executes source scripts, build tools or plugins.
 
 The scanner container has no network access or credentials. Its source mount and
 root filesystem are read-only, with bounded resources and temporary storage.
@@ -79,7 +79,7 @@ Require `needs: [approve, security]` and
 
 The Dockerfile uses the public upstream `malcontent:latest` image. The existing
 daily publisher builds `sonar-script-scan` from `.github/image-builds.json` for
-AMD64 and ARM64, checks the binary's version against the engine version declared
+AMD64, checks the binary's version against the engine version declared
 in the Dockerfile label and runs real fixtures, then promotes the version tag and
 stable `main` alias to the same anonymously verified image.
 The same catalog includes it in existing image cleanup. The first publication

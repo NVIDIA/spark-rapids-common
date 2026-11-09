@@ -10,7 +10,7 @@
     "context": "sonar-check/scan-scripts",
     "dockerfile": "sonar-check/scan-scripts/Dockerfile",
     "recipe-inputs": ["sonar-check/scan-scripts/.dockerignore"],
-    "platforms": ["linux/amd64", "linux/arm64"],
+    "platforms": ["linux/amd64"],
     "tag": "malcontent-1.28.1",
     "aliases": ["main"],
     "smoke-test": "sonar-check/scan-scripts/smoke-test.sh"
