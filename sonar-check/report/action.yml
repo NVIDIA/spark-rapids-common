@@ -60,6 +60,12 @@ runs:
         # A timed-out write may already have succeeded.
         retries: 0
         script: |
-          const {report, optionsFromEnv} = require(
-            require('node:path').join(process.env.SONAR_REPORT_ACTION_PATH, '..', 'report.js'));
-          await report({github, core, context, options: optionsFromEnv(process.env)});
+          const { report, optionsFromEnv } = require(
+            require('node:path').join(process.env.SONAR_REPORT_ACTION_PATH, '..', 'report.js'),
+          );
+          await report({
+            github,
+            core,
+            context,
+            options: optionsFromEnv(process.env),
+          });
