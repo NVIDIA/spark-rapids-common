@@ -114,6 +114,30 @@ jobs:
           PYTHONDONTWRITEBYTECODE: '1'
         run: python3 -m unittest discover -s shimpler-source-tools/tests -p 'test_*.py' -v
 
+  sonar-check:
+    name: Sonar collection and reporting tests
+    needs: select
+    if: contains(fromJSON(needs.select.outputs.suites), 'sonar-check')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout PR merge commit
+        uses: NVIDIA/spark-rapids-common/checkout@main
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Test Sonar reporting with mocked services
+        run: node --test sonar-check/test/*.test.js
+      - name: Test Sonar collection with mocked services
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 -m unittest discover -s sonar-check/test -p 'test_*.py' -v
+
   spark-home:
     name: Spark-home dependency tests
     needs: select
@@ -134,7 +158,7 @@ jobs:
   gate:
     name: CPU CI gate
     if: always()
-    needs: [select, image-tooling, runner-fallback, shimpler, spark-home]
+    needs: [select, image-tooling, runner-fallback, shimpler, sonar-check, spark-home]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

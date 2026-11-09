@@ -1,0 +1,71 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Collect Sonar analysis
+description: Verify the exact PR analysis and collect its gate and High/Blocker counts
+inputs:
+  task-file:
+    description: Scanner-produced report-task.txt path
+    default: .scannerwork/report-task.txt
+  result-path:
+    description: Output JSON path; transfer it to the report job even when collection fails
+    default: ${{ runner.temp }}/sonar-result.json
+  project:
+    description: Expected Sonar project key
+    required: true
+  pr-number:
+    description: Approved pull request number
+    required: true
+  sha:
+    description: Approved full commit SHA supplied to sonar.scm.revision
+    required: true
+  scanner-outcome:
+    description: Scanner step outcome (success, failure, cancelled or skipped)
+    required: true
+  sonar-url:
+    description: Expected HTTPS Sonar service URL
+    required: true
+  sonar-token:
+    description: Token with analysis read access and scanner-context permission
+    required: true
+outputs:
+  result-path:
+    description: Absolute JSON artifact path
+    value: ${{ steps.collect.outputs.result-path }}
+  passed:
+    description: Whether the scanner succeeded and the exact analysis passes the policy
+    value: ${{ steps.collect.outputs.passed }}
+  complete:
+    description: Whether the exact analysis identity, gate and counts were verified
+    value: ${{ steps.collect.outputs.complete }}
+  source-attempt:
+    description: Workflow attempt that produced the result
+    value: ${{ steps.collect.outputs.source-attempt }}
+runs:
+  using: composite
+  steps:
+    - name: Collect exact analysis evidence
+      id: collect
+      shell: bash
+      env:
+        COLLECT_ACTION_PATH: ${{ github.action_path }}
+        REPORT_TASK_PATH: ${{ inputs.task-file }}
+        RESULT_PATH: ${{ inputs.result-path }}
+        SONAR_PROJECT_KEY: ${{ inputs.project }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        APPROVED_SHA: ${{ inputs.sha }}
+        SCANNER_OUTCOME: ${{ inputs.scanner-outcome }}
+        SONAR_URL: ${{ inputs.sonar-url }}
+        SONAR_TOKEN: ${{ inputs.sonar-token }}
+      run: python3 "$COLLECT_ACTION_PATH/../collect.py"
