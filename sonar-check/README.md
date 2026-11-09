@@ -1,8 +1,12 @@
-# Sonar collection and PR reporting
+# Script security and Sonar reporting
 
-Two actions share reporting without owning builds, scans, approval policy or
-runner management. No repository consumer is enabled by this change.
+Three actions share source inspection and reporting without owning builds, Sonar
+scans, approval policy or runner management. No repository consumer is enabled by
+this change.
 
+- [`sonar-check/scan-scripts`](scan-scripts/README.md) inspects committed source and
+  build files in an isolated, prebuilt Malcontent image on a GitHub-hosted runner.
+  Its policy detects selected suspicious behaviors without executing PR code.
 - `sonar-check/collect` runs beside the scanner with Python 3 and Sonar access.
   It verifies the CE task's project, PR and scanner revision, then retrieves the
   quality gate and High/Blocker counts by **analysis ID**.

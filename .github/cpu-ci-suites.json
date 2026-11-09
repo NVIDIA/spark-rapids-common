@@ -41,7 +41,7 @@
     },
     "sonar-check": {
       "enabled": true,
-      "comment": "Sonar collection and reporting tests with mocked services.",
+      "comment": "Sonar script security, collection and reporting tests; service APIs are mocked.",
       "paths": ["sonar-check/"],
       "jobs": ["sonar-check"]
     },
