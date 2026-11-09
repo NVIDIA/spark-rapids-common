@@ -12,8 +12,8 @@ This repository contains reusable GitHub Action workflows and common scripts use
   required jobs from a PR's changed files, for normal PR events or copied-head pushes.
 - [Workflow result gate](workflow-result-gate/README.md): aggregate conditional jobs
   into one final check.
-- [Sonar checks](sonar-check/README.md): run a hosted workflow-security preflight,
-  collect an exact analysis result and publish a PR summary with separate credentials.
+- [Sonar reporting](sonar-check/README.md): collect an exact analysis result and
+  publish a PR summary and Sonar check with separate credentials.
 
 [CPU CI](.github/workflows/cpu-ci.yml) runs affected suites using the PR's local
 actions. Only `CPU CI gate` needs to be a

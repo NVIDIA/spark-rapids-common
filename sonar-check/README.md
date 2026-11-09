@@ -1,12 +1,8 @@
-# Sonar preflight and PR reporting
+# Sonar collection and PR reporting
 
-Three actions share security checks and reporting without owning builds, scans,
-approval policy or runner management. No repository consumer is enabled by this
-change.
+Two actions share reporting without owning builds, scans, approval policy or
+runner management. No repository consumer is enabled by this change.
 
-- [`sonar-check/preflight`](preflight/README.md) checks workflow and local-action
-  YAML in a separate GitHub-hosted job before the internal Sonar job can start.
-  It detects supported workflow hazards; it does not certify arbitrary PR code.
 - `sonar-check/collect` runs beside the scanner with Python 3 and Sonar access.
   It verifies the CE task's project, PR and scanner revision, then retrieves the
   quality gate and High/Blocker counts by **analysis ID**.

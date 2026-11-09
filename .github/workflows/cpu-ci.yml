@@ -115,7 +115,7 @@ jobs:
         run: python3 -m unittest discover -s shimpler-source-tools/tests -p 'test_*.py' -v
 
   sonar-check:
-    name: Sonar preflight and reporting tests
+    name: Sonar collection and reporting tests
     needs: select
     if: contains(fromJSON(needs.select.outputs.suites), 'sonar-check')
     runs-on: ubuntu-latest
@@ -133,10 +133,9 @@ jobs:
           package-manager-cache: false
       - name: Test Sonar reporting with mocked services
         run: node --test sonar-check/test/*.test.js
-      - name: Test Sonar collection and security preflight
+      - name: Test Sonar collection with mocked services
         env:
           PYTHONDONTWRITEBYTECODE: '1'
-          SONAR_PREFLIGHT_REAL_SCANNER: '1'
         run: python3 -m unittest discover -s sonar-check/test -p 'test_*.py' -v
 
   spark-home:

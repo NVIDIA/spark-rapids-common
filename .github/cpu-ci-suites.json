@@ -41,7 +41,7 @@
     },
     "sonar-check": {
       "enabled": true,
-      "comment": "Sonar preflight and reporting tests with mocked services and inert scanner fixtures.",
+      "comment": "Sonar collection and reporting tests with mocked services.",
       "paths": ["sonar-check/"],
       "jobs": ["sonar-check"]
     },
