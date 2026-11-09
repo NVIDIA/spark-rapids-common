@@ -1,8 +1,12 @@
-# Sonar collection and PR reporting
+# Sonar preflight and PR reporting
 
-Two actions share reporting without owning builds, scans, approval policy or
-runner management. No repository consumer is enabled by this change.
+Three actions share security checks and reporting without owning builds, scans,
+approval policy or runner management. No repository consumer is enabled by this
+change.
 
+- [`sonar-check/preflight`](preflight/README.md) checks workflow and local-action
+  YAML in a separate GitHub-hosted job before the internal Sonar job can start.
+  It detects supported workflow hazards; it does not certify arbitrary PR code.
 - `sonar-check/collect` runs beside the scanner with Python 3 and Sonar access.
   It verifies the CE task's project, PR and scanner revision, then retrieves the
   quality gate and High/Blocker counts by **analysis ID**.
@@ -10,9 +14,9 @@ runner management. No repository consumer is enabled by this change.
   sets the **Sonar check** commit status. It needs no Sonar credential or network
   access to Sonar. Node 24 is supplied by its pinned GitHub Script action.
 
-A failed scanner, non-OK gate, or any new High/Blocker issue fails the check.
-Missing or mismatched evidence also fails. Medium findings alone do not fail this
-severity policy; other configured quality-gate conditions still apply.
+The Sonar result fails on a failed scanner, non-OK gate, or any new High/Blocker
+issue. Missing or mismatched evidence also fails. Medium Sonar findings alone do
+not fail this severity policy; other configured quality-gate conditions still apply.
 
 Issue APIs return mutable current PR data, not historical analysis snapshots.
 When available, the summary labels these observations with their collection time
@@ -28,6 +32,11 @@ and pass the expected project and PR to the scanner. Use a fresh task file from
 that invocation; a matching older scan of the same SHA is not a new invocation.
 Set `Sonar check` pending on that SHA before scanning and serialize runs for the
 same PR; different PRs can run concurrently.
+
+Run the scanner and collector in a fresh trusted environment that has not executed
+PR build scripts. Later step-local secrets do not isolate a compromised workspace,
+and matching result identities do not authenticate a hostile producer.
+
 The Sonar token must allow task/scanner-context and quality-gate reads. The gate
 must contain `new_software_quality_high_issues` and
 `new_software_quality_blocker_issues`, both with comparator `GT` and threshold `0`.

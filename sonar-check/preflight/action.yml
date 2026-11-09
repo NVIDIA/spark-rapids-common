@@ -1,0 +1,41 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Pre-Sonar workflow security
+description: Audit approved workflow definitions on a hosted runner before internal execution
+inputs:
+  source-directory:
+    description: Git worktree root within GITHUB_WORKSPACE; only committed definitions are audited
+    default: .
+  expected-sha:
+    description: Full approved commit SHA checked out by the caller
+    required: true
+outputs:
+  passed:
+    description: True only when the entire security preflight passes
+    value: ${{ steps.preflight.outputs.passed }}
+  sha:
+    description: Verified commit SHA; emitted only after a successful audit
+    value: ${{ steps.preflight.outputs.sha }}
+runs:
+  using: composite
+  steps:
+    - name: Audit committed workflow and action definitions
+      id: preflight
+      shell: bash
+      env:
+        PREFLIGHT_ACTION_PATH: ${{ github.action_path }}
+        INPUT_SOURCE_DIRECTORY: ${{ inputs.source-directory }}
+        INPUT_EXPECTED_SHA: ${{ inputs.expected-sha }}
+      run: python3 -I "$PREFLIGHT_ACTION_PATH/../preflight.py"
