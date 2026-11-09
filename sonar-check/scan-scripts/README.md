@@ -40,9 +40,11 @@ Python 3, Docker and access to the public image registry.
 Consumers can omit this input; the shared action and image own scanner upgrades.
 Only trusted workflows should set this input; pin the published digest when an
 immutable runtime is required, retaining it with a non-`build-*` tag to protect it
-from cleanup. The action checks the scanner-version label and
-runs the pulled image by its local immutable ID. A missing or incompatible image
-fails the scan, with no local-build fallback.
+from cleanup. The action checks the image's compatibility contract and engine
+version metadata, then runs the pulled image by its local immutable ID. Compatible
+engine upgrades keep the same contract so actions pinned to reviewed commits keep
+working with `main`. A missing or incompatible image fails the scan, with no
+local-build fallback.
 
 This fragment belongs in the Sonar workflow after its existing trusted approval
 job. Pin both actions to reviewed full commit SHAs.
@@ -77,12 +79,17 @@ Require `needs: [approve, security]` and
 
 The Dockerfile uses the public upstream `malcontent:latest` image. The existing
 daily publisher builds `sonar-script-scan` from `.github/image-builds.json` for
-AMD64 and ARM64, checks the scanner version and real fixtures, then promotes the
-version tag and stable `main` alias to the same anonymously verified image.
+AMD64 and ARM64, checks the binary's version against the engine version declared
+in the Dockerfile label and runs real fixtures, then promotes the version tag and
+stable `main` alias to the same anonymously verified image.
 The same catalog includes it in existing image cleanup. The first publication
 must finish before enabling consumers. An unsupported upstream version fails the
-smoke checks before promotion; update the catalog version tag and shared policy
-compatibility version together. The consumer alias stays `main`.
+smoke checks before promotion; update the catalog version tag and Dockerfile's
+engine-version label together. Keep contract `1` only while the scanner's JSON
+report and rule behavior remain compatible with existing action revisions;
+validate those revisions when upgrading the engine. An incompatible contract
+needs a consumer migration before replacing `main`. The consumer alias stays
+`main`.
 
 CPU CI builds the proposed Dockerfile locally and tests that image before merge;
 it never publishes PR images. The publisher's `smoke-test.sh` reuses those fixtures.

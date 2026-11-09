@@ -21,6 +21,7 @@ const path = require('node:path');
 const { test } = require('node:test');
 const { report, optionsFromEnv } = require('../report');
 const sha = 'a'.repeat(40);
+const baseRef = 'release/26.12';
 const repository = 'test-org/project';
 const sonarUrl = 'https://sonar.example.test';
 const marker = '<!-- sonar-check:test-org/project:7:123:1 -->';
@@ -35,6 +36,7 @@ function result(overrides = {}) {
     schema: 2,
     repository,
     sha,
+    baseRef,
     pr: 7,
     runId: '123',
     runAttempt: '1',
@@ -105,6 +107,7 @@ function fixture(t, evidence = result()) {
       resultPath,
       prNumber: '7',
       sha,
+      baseRef,
       sourceAttempt: '1',
       scanResult: 'success',
       sonarUrl,
@@ -130,7 +133,7 @@ function fixture(t, evidence = result()) {
         get: api('pull', () => ({
           data: {
             number: 7,
-            base: { repo: { full_name: repository } },
+            base: { ref: baseRef, repo: { full_name: repository } },
             head: { sha },
           },
         })),
@@ -174,6 +177,7 @@ test('maps inputs without accepting repository or run overrides', () => {
       SONAR_RESULT_PATH: 'r.json',
       SONAR_PR_NUMBER: '7',
       SONAR_SHA: sha,
+      SONAR_BASE_REF: baseRef,
       SONAR_SOURCE_ATTEMPT: '2',
       SONAR_SCAN_RESULT: 'failure',
       SONAR_URL: sonarUrl,
@@ -186,6 +190,7 @@ test('maps inputs without accepting repository or run overrides', () => {
       resultPath: 'r.json',
       prNumber: '7',
       sha,
+      baseRef,
       sourceAttempt: '2',
       scanResult: 'failure',
       sonarUrl,
@@ -235,6 +240,8 @@ for (const [name, change] of Object.entries({
   'wrong schema': { schema: 1 },
   'different repository': { repository: 'other/project' },
   'different SHA': { sha: 'b'.repeat(40) },
+  'missing target branch': { baseRef: undefined },
+  'different target branch': { baseRef: 'main' },
   'different PR': { pr: 8 },
   'different run': { runId: '124' },
   'numeric run': { runId: 123 },
@@ -446,7 +453,7 @@ test('stale PR head is annotated and status remains on analyzed SHA', async t =>
   f.handlers.pull = () => ({
     data: {
       number: 7,
-      base: { repo: { full_name: repository } },
+      base: { ref: baseRef, repo: { full_name: repository } },
       head: { sha: 'b'.repeat(40) },
     },
   });
@@ -456,12 +463,49 @@ test('stale PR head is annotated and status remains on analyzed SHA', async t =>
   assert.doesNotMatch(f.comments[0].body, new RegExp('b'.repeat(40)));
 });
 
+test('retargeted PR fails and explains the changed baseline even on the same SHA', async t => {
+  const f = fixture(t);
+  f.handlers.pull = () => ({
+    data: {
+      number: 7,
+      base: { ref: 'main', repo: { full_name: repository } },
+      head: { sha },
+    },
+  });
+  assert.deepEqual(await f.run(), {
+    passed: false,
+    published: true,
+    statusPublished: true,
+  });
+  assert.match(f.comments[0].body, /Sonar check: FAIL/);
+  assert.match(f.comments[0].body, /Target branch: \*\*release\/26\.12\*\*/);
+  assert.match(f.comments[0].body, /PR target branch has since changed/);
+  assert.doesNotMatch(f.comments[0].body, /PR head has since changed/);
+  assert.equal(f.statuses()[0].sha, sha);
+  assert.equal(f.statuses()[0].state, 'failure');
+  assert.equal(f.failures.length, 1);
+});
+
+test('missing current PR target branch fails without publishing a misleading summary', async t => {
+  const f = fixture(t);
+  f.handlers.pull = () => ({
+    data: {
+      number: 7,
+      base: { repo: { full_name: repository } },
+      head: { sha },
+    },
+  });
+  assert.equal((await f.run()).passed, false);
+  assert.equal(f.comments.length, 0);
+  assert.equal(f.statuses()[0].state, 'failure');
+});
+
 test('cannot redirect PR lookup or writes to a different repository', async t => {
   const f = fixture(t);
   f.handlers.pull = () => ({
     data: {
       number: 7,
-      base: { repo: { full_name: 'other/repo' } },
+      base: { ref: baseRef, repo: { full_name: 'other/repo' } },
       head: { sha },
     },
   });
@@ -735,6 +779,10 @@ for (const change of [
   { sourceAttempt: '01' },
   { scanResult: 'unknown' },
   { project: '' },
+  { baseRef: undefined },
+  { baseRef: '' },
+  { baseRef: 'release candidate' },
+  { baseRef: 'main\nother' },
   { sonarUrl: 'http://sonar.example.test' },
   { sonarUrl: `${sonarUrl}?token=secret` },
 ]) {
@@ -764,6 +812,7 @@ test('adapter pins supported github-script and disables mutation retries/debug l
   assert.match(action, /retries: 0/);
   assert.match(action, /debug: false/);
   assert.match(action, /SONAR_REPORT_ACTION_PATH: \$\{\{ github.action_path }}/);
+  assert.match(action, /SONAR_BASE_REF: \$\{\{ inputs.base-ref }}/);
   assert.match(action, /SONAR_REPORT_ACTIONS_TOKEN: \$\{\{ inputs.github-token == github.token }}/);
   const script = action
     .split('        script: |\n')[1]

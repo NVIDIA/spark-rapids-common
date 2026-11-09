@@ -30,6 +30,9 @@ inputs:
   sha:
     description: Approved full commit SHA supplied to sonar.scm.revision
     required: true
+  base-ref:
+    description: Approved target branch explicitly supplied to sonar.pullrequest.base
+    required: true
   scanner-outcome:
     description: Scanner step outcome (success, failure, cancelled or skipped)
     required: true
@@ -65,6 +68,7 @@ runs:
         SONAR_PROJECT_KEY: ${{ inputs.project }}
         PR_NUMBER: ${{ inputs.pr-number }}
         APPROVED_SHA: ${{ inputs.sha }}
+        APPROVED_BASE_REF: ${{ inputs.base-ref }}
         SCANNER_OUTCOME: ${{ inputs.scanner-outcome }}
         SONAR_URL: ${{ inputs.sonar-url }}
         SONAR_TOKEN: ${{ inputs.sonar-token }}

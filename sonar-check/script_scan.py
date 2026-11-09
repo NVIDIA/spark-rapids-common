@@ -30,7 +30,8 @@ import tempfile
 import time
 import uuid
 
-SCANNER_VERSION = "1.28.1"
+SCANNER_CONTRACT = "1"
+SCANNER_CONTRACT_LABEL = "com.nvidia.script-scan.contract"
 SCANNER_VERSION_LABEL = "com.nvidia.script-scan.scanner-version"
 DOCKER_HOST = "unix:///var/run/docker.sock"
 OWNER_LABEL = "com.nvidia.script-scan.owner"
@@ -43,7 +44,7 @@ RISK_LEVELS = {0: "NONE", 1: "LOW", 2: "MEDIUM", 3: "HIGH", 4: "CRITICAL"}
 
 # The scanner rules also match prefixes such as "| sha224sum". Confirm a complete
 # literal shell command in the immutable blob before blocking these indicators.
-DOWNLOAD_PIPE = {"exec/shell/pipe_sh", "c2/tool_transfer/shell"}
+DOWNLOAD_BEHAVIORS = {"c2/tool_transfer/shell", "c2/tool_transfer/download"}
 SHELL_PIPE = re.compile(
     rb"(?<!\|)\|[ \t]*(?:/bin/)?(?:bash|sh)(?=$|[ \t\r\n;|&<>()\"'])"
 )
@@ -302,14 +303,17 @@ def resolve_image(prefix, image, platform=None):
     try:
         metadata = json.loads(data)
         identity = metadata["Id"]
+        contract = metadata["Config"]["Labels"][SCANNER_CONTRACT_LABEL]
         version = metadata["Config"]["Labels"][SCANNER_VERSION_LABEL]
     except (ValueError, UnicodeError, TypeError, KeyError) as error:
         raise ScanError("Scanner image metadata is invalid") from error
     require(
         isinstance(identity, str)
         and re.fullmatch(r"sha256:[a-f0-9]{64}", identity)
-        and version == SCANNER_VERSION,
-        "Scanner image does not match the supported scanner version",
+        and contract == SCANNER_CONTRACT
+        and isinstance(version, str)
+        and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version),
+        "Scanner image does not match the supported contract or version metadata",
     )
     if platform:
         require(
@@ -486,7 +490,11 @@ def evaluate(report, manifest):
             categories.add(category)
             if score == 4:
                 blocking.append((category + "/" + rule, severity))
-        if DOWNLOAD_PIPE <= categories and entry["shell_pipe"]:
+        if (
+            "exec/shell/pipe_sh" in categories
+            and categories & DOWNLOAD_BEHAVIORS
+            and entry["shell_pipe"]
+        ):
             blocking.append(("download-with-direct-shell-pipe", "MEDIUM"))
         if CREDENTIAL_UPLOAD <= categories:
             blocking.append(("credential-access-with-upload", "MEDIUM"))
@@ -506,7 +514,7 @@ def summary(result):
     report = f"Script security: {'FAIL' if findings else 'PASS'}. Blocking findings: {len(findings)}."
     rows = [
         report,
-        f"Scanner: Malcontent {SCANNER_VERSION}. Policy: Critical, download/direct-shell pipes, AWS credential access with upload.",
+        f"Scanner: Malcontent, contract {SCANNER_CONTRACT}. Policy: Critical, download/direct-shell pipes, AWS credential access with upload.",
         f"Root-repository files: {result['file_count']}; verified empty files: {result['empty_files']}.",
     ]
     if findings:

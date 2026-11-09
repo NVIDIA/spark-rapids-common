@@ -113,22 +113,38 @@ def validate_context(context, result):
     expected = {
         "sonar.projectKey": result["project"],
         "sonar.pullrequest.key": str(result["pr"]),
+        "sonar.pullrequest.base": result["baseRef"],
         "sonar.scm.revision": result["sha"],
     }
-    observed = {key: set() for key in expected}
+    # Module sections have their own project keys; only the root binds this scan.
+    observed = {}
+    root_seen = False
+    in_root = False
     for line in context.splitlines():
+        if line == "Project scanner properties:":
+            require(not root_seen, "Duplicate root scanner properties section")
+            root_seen = True
+            in_root = True
+            continue
+        if line and not line[0].isspace():
+            in_root = False
+        if not in_root:
+            continue
         match = re.fullmatch(
-            r"\s*(?:-\s*)?(sonar\.projectKey|sonar\.pullrequest\.key|sonar\.scm\.revision)\s*=(.*)",
+            r"  - (sonar\.projectKey|sonar\.pullrequest\.(?:key|base)|sonar\.scm\.revision)=(.*)",
             line,
         )
         if match:
-            value = match[2].strip()
-            observed[match[1]].add(
+            require(
+                match[1] not in observed, "Duplicate root scanner identity property"
+            )
+            value = match[2]
+            observed[match[1]] = (
                 value.lower() if match[1] == "sonar.scm.revision" else value
             )
     require(
-        all(observed[key] == {value} for key, value in expected.items()),
-        "Scanner project, pull request or revision does not match the approved commit",
+        root_seen and observed == expected,
+        "Root scanner project, pull request, target branch or revision does not match approval",
     )
 
 
@@ -385,10 +401,15 @@ def collect(sonar, result, task_file, scanner_outcome):
 def main():
     environment = os.environ
     sha = environment.get("APPROVED_SHA", "")
+    base_ref = environment.get("APPROVED_BASE_REF", "")
     repository = environment.get("GITHUB_REPOSITORY", "")
     pr = environment.get("PR_NUMBER", "")
     project = environment.get("SONAR_PROJECT_KEY", "")
     require(re.fullmatch(r"[a-fA-F0-9]{40}", sha), "Invalid approved SHA")
+    require(
+        safe_text(base_ref, 1024) and not any(c.isspace() for c in base_ref),
+        "Invalid approved target branch",
+    )
     require(
         re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository),
         "Invalid repository",
@@ -417,6 +438,7 @@ def main():
         "schema": 2,
         "repository": repository,
         "sha": sha.lower(),
+        "baseRef": base_ref,
         "pr": int(pr),
         "project": project,
         "runId": environment["GITHUB_RUN_ID"],

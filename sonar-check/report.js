@@ -25,6 +25,7 @@ function optionsFromEnv(env) {
     resultPath: env.SONAR_RESULT_PATH,
     prNumber: env.SONAR_PR_NUMBER,
     sha: env.SONAR_SHA,
+    baseRef: env.SONAR_BASE_REF,
     sourceAttempt: env.SONAR_SOURCE_ATTEMPT,
     scanResult: env.SONAR_SCAN_RESULT,
     sonarUrl: env.SONAR_URL,
@@ -105,6 +106,7 @@ function validateOptions(options, target) {
   );
   requireValue(['success', 'failure', 'cancelled', 'skipped'].includes(options.scanResult));
   requireValue(text(options.resultPath, 4096) && text(options.project, 400));
+  requireValue(text(options.baseRef, 1024) && !/\s/.test(options.baseRef));
   return baseUrl(options.sonarUrl);
 }
 
@@ -153,6 +155,7 @@ function validateResult(data, target, options, sonarUrl) {
       typeof data.sha === 'string' &&
       shaPattern.test(data.sha) &&
       data.sha.toLowerCase() === target.sha &&
+      data.baseRef === options.baseRef &&
       data.pr === target.pr &&
       data.runId === target.runId &&
       data.runAttempt === options.sourceAttempt &&
@@ -254,7 +257,7 @@ function link(value) {
   );
 }
 
-function summary(target, options, evidence, passed, stale, marker) {
+function summary(target, options, evidence, passed, stale, retargeted, marker) {
   const run = `${target.server}/${target.repository}/actions/runs/${target.runId}`;
   const scanUrl = `${run}/attempts/${options.sourceAttempt}`;
   const reportUrl = `${run}/attempts/${target.runAttempt}`;
@@ -267,6 +270,11 @@ function summary(target, options, evidence, passed, stale, marker) {
     '',
     `${evidence ? 'Analyzed' : 'Expected'} commit: [\`${target.sha.slice(0, 12)}\`](${commitUrl}). ` +
       `This result applies only to that commit.${stale ? ' The PR head has since changed.' : ''}`,
+    '',
+    `Target branch: **${escape(options.baseRef)}**.` +
+      (retargeted
+        ? ' The PR target branch has since changed; rerun the scan for the current target.'
+        : ''),
     '',
   ];
   if (evidence) {
@@ -328,11 +336,14 @@ function summary(target, options, evidence, passed, stale, marker) {
       `[Full Sonar report](${link(evidence.reportUrl)})`,
     );
     if (!passed) {
-      lines.push('', 'The scan, quality gate, or High/Blocker policy did not pass.');
+      lines.push(
+        '',
+        'The scan, quality gate, High/Blocker policy, or target branch verification did not pass.',
+      );
     }
   } else {
     lines.push(
-      'Scan evidence is missing, incomplete, invalid, or does not match this repository, commit, PR, and run.',
+      'Scan evidence is missing, incomplete, invalid, or does not match this repository, commit, PR, target branch, and run.',
     );
   }
   lines.push('', `[Scan run](${scanUrl})`);
@@ -459,9 +470,13 @@ async function report({ github, core, context, options }) {
       requireValue(
         pr?.number === target.pr &&
           pr.base?.repo?.full_name === target.repository &&
+          text(pr.base.ref, 1024) &&
+          !/\s/.test(pr.base.ref) &&
           typeof pr.head?.sha === 'string' &&
           shaPattern.test(pr.head.sha),
       );
+      const retargeted = pr.base.ref !== options.baseRef;
+      passed = passed && !retargeted;
       const marker = `<!-- sonar-check:${target.repository}:${target.pr}:${target.runId}:${options.sourceAttempt} -->`;
       const body = summary(
         target,
@@ -469,6 +484,7 @@ async function report({ github, core, context, options }) {
         evidence,
         passed,
         pr.head.sha.toLowerCase() !== target.sha,
+        retargeted,
         marker,
       );
       await publishComment(github, target, body, marker, options.actionsToken === true);
@@ -491,7 +507,7 @@ async function report({ github, core, context, options }) {
       state: passed ? 'success' : 'failure',
       description: passed
         ? 'Sonar passed: no new High or Blocker issues.'
-        : 'Sonar failed: scan evidence, quality gate, or publication failed.',
+        : 'Sonar failed: evidence, quality gate, target branch, or publication failed.',
       target_url: `${target.server}/${target.repository}/actions/runs/${target.runId}/attempts/${target.runAttempt}`,
       request,
     });

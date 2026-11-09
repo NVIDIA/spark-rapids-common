@@ -16,6 +16,7 @@
 FROM cgr.dev/chainguard/malcontent:latest
 
 LABEL org.opencontainers.image.source="https://github.com/NVIDIA/spark-rapids-common" \
+      com.nvidia.script-scan.contract="1" \
       com.nvidia.script-scan.scanner-version="1.28.1"
 
 USER 65532:65532

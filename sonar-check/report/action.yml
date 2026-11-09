@@ -24,6 +24,9 @@ inputs:
   sha:
     description: Full analyzed commit SHA
     required: true
+  base-ref:
+    description: Approved target branch supplied to the scanner and collector
+    required: true
   source-attempt:
     description: Required producer run attempt, including when only the reporter is rerun
     required: true
@@ -49,6 +52,7 @@ runs:
         SONAR_RESULT_PATH: ${{ inputs.result-path }}
         SONAR_PR_NUMBER: ${{ inputs.pr-number }}
         SONAR_SHA: ${{ inputs.sha }}
+        SONAR_BASE_REF: ${{ inputs.base-ref }}
         SONAR_SOURCE_ATTEMPT: ${{ inputs.source-attempt }}
         SONAR_SCAN_RESULT: ${{ inputs.scan-result }}
         SONAR_URL: ${{ inputs.sonar-url }}

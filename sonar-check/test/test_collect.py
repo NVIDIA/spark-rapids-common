@@ -30,6 +30,7 @@ SPEC = importlib.util.spec_from_file_location(
 collector = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(collector)
 SHA = "a" * 40
+BASE_REF = "release/26.12"
 HOST = "https://sonar.example.com"
 
 
@@ -38,6 +39,7 @@ def result():
         "schema": 2,
         "repository": "example/project",
         "sha": SHA,
+        "baseRef": BASE_REF,
         "pr": 42,
         "project": "project",
         "runId": "100",
@@ -65,10 +67,12 @@ class FakeSonar:
             "status": "SUCCESS",
             "analysisId": "analysis-1",
             "scannerContext": (
-                "\n  - sonar.projectKey=project\n"
-                "  - sonar.pullrequest.key=42\n  - sonar.scm.revision="
-                + SHA
-                + "\nsonar.token=NEVER_SERIALIZE_CONTEXT"
+                "Project scanner properties:\n"
+                "  - sonar.projectKey=project\n"
+                "  - sonar.pullrequest.key=42\n"
+                f"  - sonar.pullrequest.base={BASE_REF}\n"
+                f"  - sonar.scm.revision={SHA}\n"
+                "  - sonar.token=NEVER_SERIALIZE_CONTEXT\n"
             ),
         }
         self.statuses = []
@@ -195,8 +199,7 @@ class CollectionTests(unittest.TestCase):
             ("scannerContext", None),
             (
                 "scannerContext",
-                "sonar.projectKey=project\nsonar.pullrequest.key=42\nsonar.scm.revision="
-                + "b" * 40,
+                FakeSonar().task["scannerContext"].replace(SHA, "b" * 40),
             ),
         ):
             with self.subTest(key=key, value=value):
@@ -207,13 +210,82 @@ class CollectionTests(unittest.TestCase):
 
     def test_conflicting_context_and_task_properties_fail(self):
         sonar = FakeSonar()
-        sonar.task["scannerContext"] += "\nsonar.pullrequest.key=43"
+        sonar.task["scannerContext"] += "  - sonar.pullrequest.key=43\n"
         with self.assertRaises(collector.ValidationError):
             self.collect(sonar)
         with self.task_file.open("a") as output:
             output.write("projectKey=other\n")
         with self.assertRaises(collector.ValidationError):
             self.collect()
+
+    def test_root_identity_accepts_different_server_and_module_properties(self):
+        sonar = FakeSonar()
+        sonar.task["scannerContext"] = (
+            "Plugins:\nGlobal server settings:\n"
+            "  - sonar.projectKey=global\n"
+            "Project server settings:\n"
+            "  - sonar.projectKey=server\n"
+            + sonar.task["scannerContext"]
+            + "Scanner properties of module: child\n"
+            "  - sonar.projectKey=child\n"
+            "  - sonar.pullrequest.key=99\n"
+            "  - sonar.pullrequest.base=main\n"
+            f"  - sonar.scm.revision={'b' * 40}\n"
+        )
+        evidence = self.collect(sonar)
+        self.assertTrue(evidence["complete"] and evidence["passed"])
+        self.assertEqual(evidence["baseRef"], BASE_REF)
+
+    def test_module_properties_cannot_supply_missing_root_identity(self):
+        for property_line in (
+            "  - sonar.projectKey=project\n",
+            "  - sonar.pullrequest.key=42\n",
+            f"  - sonar.pullrequest.base={BASE_REF}\n",
+            f"  - sonar.scm.revision={SHA}\n",
+        ):
+            sonar = FakeSonar()
+            sonar.task["scannerContext"] = (
+                sonar.task["scannerContext"].replace(property_line, "")
+                + "Scanner properties of module: child\n"
+                + property_line
+            )
+            with self.subTest(property=property_line), self.assertRaises(
+                collector.ValidationError
+            ):
+                self.collect(sonar)
+
+    def test_missing_and_duplicate_root_sections_are_rejected(self):
+        context = FakeSonar().task["scannerContext"]
+        for invalid_context in (
+            context.replace("Project scanner properties:\n", ""),
+            context.replace("Project scanner properties:", "Project server settings:"),
+            context + context,
+            context
+            + context.replace("sonar.projectKey=project", "sonar.projectKey=other"),
+        ):
+            sonar = FakeSonar()
+            sonar.task["scannerContext"] = invalid_context
+            with self.subTest(context=invalid_context), self.assertRaises(
+                collector.ValidationError
+            ):
+                self.collect(sonar)
+
+    def test_duplicate_root_identity_is_rejected_even_when_values_match(self):
+        sonar = FakeSonar()
+        sonar.task["scannerContext"] += "  - sonar.projectKey=project\n"
+        with self.assertRaises(collector.ValidationError):
+            self.collect(sonar)
+
+    def test_wrong_or_missing_scanner_target_branch_is_rejected(self):
+        for base_line in ("  - sonar.pullrequest.base=main\n", ""):
+            sonar = FakeSonar()
+            sonar.task["scannerContext"] = sonar.task["scannerContext"].replace(
+                f"  - sonar.pullrequest.base={BASE_REF}\n", base_line
+            )
+            with self.subTest(base_line=base_line), self.assertRaises(
+                collector.ValidationError
+            ):
+                self.collect(sonar)
 
     def test_missing_or_changed_quality_policy_and_counts_fail(self):
         mutations = [
@@ -299,6 +371,7 @@ class CollectionTests(unittest.TestCase):
         outputs = Path(self.directory.name) / "outputs"
         environment = {
             "APPROVED_SHA": SHA,
+            "APPROVED_BASE_REF": BASE_REF,
             "GITHUB_REPOSITORY": "example/project",
             "PR_NUMBER": "42",
             "SONAR_PROJECT_KEY": "project",
@@ -327,6 +400,7 @@ class CollectionTests(unittest.TestCase):
         outputs = Path(self.directory.name) / "outputs"
         environment = {
             "APPROVED_SHA": SHA,
+            "APPROVED_BASE_REF": BASE_REF,
             "GITHUB_REPOSITORY": "example/project",
             "PR_NUMBER": "42",
             "SONAR_PROJECT_KEY": "project",
@@ -349,15 +423,27 @@ class CollectionTests(unittest.TestCase):
                 evidence["schema"],
                 evidence["repository"],
                 evidence["sha"],
+                evidence["baseRef"],
                 evidence["runAttempt"],
             ),
-            (2, "example/project", SHA, "2"),
+            (2, "example/project", SHA, BASE_REF, "2"),
         )
         self.assertEqual(evidence["detailsScope"], "current-pr")
         self.assertIn(
             "passed=true\ncomplete=true\nsource-attempt=2", outputs.read_text()
         )
         self.assertNotIn("PRIVATE_TOKEN", output.read_text())
+
+    def test_main_requires_valid_approved_target_branch(self):
+        for base_ref in ("", "release candidate", "main\nother"):
+            with patch.dict(
+                os.environ,
+                {"APPROVED_SHA": SHA, "APPROVED_BASE_REF": base_ref},
+                clear=True,
+            ), self.subTest(base_ref=base_ref), self.assertRaisesRegex(
+                collector.ValidationError, "Invalid approved target branch"
+            ):
+                collector.main()
 
     def test_redirect_and_untrusted_service_urls_are_rejected(self):
         with self.assertRaises(collector.ValidationError):
