@@ -90,18 +90,22 @@ function normalize(versions) {
 }
 
 async function plan(versions, options, manifest, now = Date.now()) {
-  const eligible = versions.filter(v => v.tags.length &&
+  const protectedDigests = new Set(options.protectedDigests);
+  const tagged = versions.filter(v => v.tags.length &&
     v.tags.every(tag => matches(tag, options.patterns)) &&
     !v.tags.some(tag => matches(tag, options.protectedPatterns)) &&
-    !options.protectedDigests.includes(v.digest)).sort((a, b) => b.modified - a.modified || b.id - a.id);
+    !protectedDigests.has(v.digest)).sort((a, b) => b.modified - a.modified || b.id - a.id);
   const cutoff = now - options.days * 86400000;
-  const candidates = eligible.slice(options.keep).filter(v => v.modified < cutoff)
-    .reverse();
+  // Untagged manifests must not consume the keep-latest quota for tagged builds.
+  const candidates = tagged.slice(options.keep).concat(
+    versions.filter(v => !v.tags.length && !protectedDigests.has(v.digest)))
+    .filter(v => v.modified < cutoff).sort((a, b) => a.modified - b.modified || a.id - b.id);
   if (!candidates.length) return [];
   const visited = new Set();
-  const referenced = new Set(options.protectedDigests);
-  // Count only unreferenced images against the deletion limit. Scan every root,
-  // including old build indexes; their children can be removed in a later run.
+  const parents = new Map();
+  const children = new Map();
+  const referrers = new Map();
+  // Scan every version, including young untagged indexes and protected digests.
   const pending = versions.map(v => v.digest).concat(options.protectedDigests);
   while (pending.length) {
     const digest = pending.pop();
@@ -112,25 +116,52 @@ async function plan(versions, options, manifest, now = Date.now()) {
     if (value.schemaVersion !== 2 || (!indexTypes.has(value.mediaType) && !imageTypes.has(value.mediaType))) {
       throw new Error(`Unsupported manifest ${digest}; no cleanup is safe`);
     }
+    const references = new Set();
     if (indexTypes.has(value.mediaType)) {
       if (!Array.isArray(value.manifests) || !value.manifests.length ||
         value.manifests.some(child => !digestPattern.test(child.digest))) {
         throw new Error(`Invalid manifest index ${digest}`);
       }
       for (const child of value.manifests) {
-        referenced.add(child.digest);
-        pending.push(child.digest);
+        references.add(child.digest);
       }
     } else if (!value.config || !Array.isArray(value.layers)) {
       throw new Error(`Incomplete image manifest ${digest}`);
     }
     if (value.subject) {
       if (!digestPattern.test(value.subject.digest)) throw new Error(`Invalid manifest subject ${digest}`);
-      referenced.add(value.subject.digest);
-      pending.push(value.subject.digest);
+      references.add(value.subject.digest);
+      if (!referrers.has(value.subject.digest)) referrers.set(value.subject.digest, new Set());
+      referrers.get(value.subject.digest).add(digest);
+    }
+    children.set(digest, references);
+    for (const child of references) {
+      if (!parents.has(child)) parents.set(child, new Set());
+      parents.get(child).add(digest);
+      pending.push(child);
     }
   }
-  return candidates.filter(v => !referenced.has(v.digest)).slice(0, options.limit);
+  // A retained subject also keeps detached attestations/signatures that refer to it.
+  const candidateDigests = new Set(candidates.map(v => v.digest));
+  const retained = new Set();
+  const required = [...visited].filter(digest => !candidateDigests.has(digest));
+  while (required.length) {
+    const digest = required.pop();
+    if (retained.has(digest)) continue;
+    retained.add(digest);
+    required.push(...children.get(digest), ...(referrers.get(digest) || []));
+  }
+  // Only release children after all their parents are scheduled before them.
+  // Every deletion prefix is safe if the cap or a failed DELETE stops this run.
+  const selected = [];
+  while (selected.length < options.limit) {
+    const index = candidates.findIndex(v => !retained.has(v.digest) && !parents.get(v.digest)?.size);
+    if (index === -1) break;
+    const [candidate] = candidates.splice(index, 1);
+    selected.push(candidate);
+    for (const child of children.get(candidate.digest)) parents.get(child).delete(candidate.digest);
+  }
+  return selected;
 }
 
 async function readWithRetry(read, wait = sleep) {
@@ -208,11 +239,11 @@ async function cleanup({github, core, options, fetchImpl = fetch, wait = sleep, 
   core.setOutput('candidates', candidates.length);
   core.info(`${options.dryRun ? 'Dry run' : 'Cleanup'}: ${options.owner}/${options.package}; ` +
     `${initial.length} versions, ${candidates.length} eligible, retention ${options.days} days, limit ${options.limit}`);
-  for (const v of candidates) core.info(`Candidate ${v.id}: ${v.digest} [${v.tags.join(', ')}]`);
+  for (const v of candidates) core.info(`Candidate ${v.id}: ${v.digest} [${v.tags.join(', ') || 'untagged'}]`);
   await core.summary.addHeading('Image cleanup').addRaw(
     `${options.owner}/${options.package}: ${options.dryRun ? 'dry run' : 'deletion enabled'}. ` +
     `${candidates.length} eligible versions older than ${options.days} days.\n\n` +
-    candidates.map(v => `- ${v.id}: \`${v.digest}\` (${v.tags.join(', ')})`).join('\n') + '\n').write();
+    candidates.map(v => `- ${v.id}: \`${v.digest}\` (${v.tags.join(', ') || 'untagged'})`).join('\n') + '\n').write();
   if (options.dryRun || !candidates.length) return;
 
   // The caller must serialize publishers and cleanup. Also reject changes seen

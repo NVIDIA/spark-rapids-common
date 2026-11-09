@@ -15,7 +15,8 @@
 name: Image cleanup
 on:
   schedule:
-    - cron: '47 4 * * 0'
+    # A daily multi-platform build creates several package versions, not just one.
+    - cron: '47 4 * * *'
   workflow_dispatch:
     inputs:
       dry-run:

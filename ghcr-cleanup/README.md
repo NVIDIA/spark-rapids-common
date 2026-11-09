@@ -1,9 +1,13 @@
 # GHCR Cleanup
 
-Delete build-only package versions older than seven days, not individual tags.
+Delete build-only package versions and unreferenced untagged manifests older than
+seven days, not individual tags.
 Set `retention-days` to choose a different period for your repository. A version sharing
-`build-*` with `main-*`, release tags or `v1` is kept. Untagged versions and
-platform/attestation manifests referenced by retained images are also kept.
+`build-*` with `main-*`, release tags or `v1` is kept. All platform and attestation
+manifests referenced by retained versions or protected digests are also kept,
+including dependencies of recent untagged indexes.
+Detached OCI attestations or signatures with a `subject` pointing to an image
+retained by tag, age, `keep-latest` or explicit digest protection are also kept.
 
 ## Usage
 
@@ -33,9 +37,20 @@ jobs:
           dry-run: 'true'
 ```
 
-By default, every tag must match `build-*`, and both creation and last update must
-be older than the retention period. No minimum number of builds is kept.
-At most 20 versions are deleted per package per run. Set `dry-run: 'false'` to delete.
+For tagged versions, every tag must match `build-*` by default. For both tagged
+and untagged versions, creation and last update must be older than the retention
+period. No minimum number of builds is kept; `keep-latest` applies only to matching
+tagged versions, not their untagged manifests.
+
+Delete indexes before their children, and OCI referrers before their subjects.
+A child is eligible only after all referencing manifests have been selected for
+earlier deletion. At most 20 versions are deleted per package per run, counting
+indexes, platforms and attestations separately. A cap leaves the remaining
+dependencies intact for later runs. Set `dry-run: 'false'` to delete.
+
+Deletion is sequential, not atomic. An expired disposable image may lose a
+detached attestation before the image itself is removed if the cap or an error
+ends the batch. Images retained by policy are excluded from this process.
 
 See [action.yml](action.yml) for optional tag patterns, protected references,
 deletion limits and the `candidates`/`deleted` outputs.
@@ -47,9 +62,14 @@ No checkout, Docker daemon or build metadata is required.
   only locks within one repository; coordinate external writers separately.
 - Keep retention longer than running builds and digest consumers need. Protect
   longer-lived digests explicitly or give them a non-disposable tag.
+- Untagged does not mean unused. External digest-only consumers cannot be discovered;
+  list their digests in `protected-digests`. Cyclic manifest references are retained.
 - Incomplete or changed metadata stops cleanup. Uncertain deletions are not retried.
 
-This repository runs cleanup weekly with the defaults above and deletion enabled.
+This repository runs cleanup daily with the defaults above and deletion enabled.
+The daily cadence keeps the 20-version cap ahead of routine multi-platform publication.
+Higher-volume consumers should adjust their schedule or cap; retention is a minimum
+age, not a promise that every expired version is removed immediately.
 Manual runs default to dry-run; cleanup shares the publisher's concurrency group.
 
 ## Tests
