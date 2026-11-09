@@ -44,9 +44,12 @@ MAX_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_REPORT_BYTES = 32 * 1024 * 1024
 RISK_LEVELS = {0: "NONE", 1: "LOW", 2: "MEDIUM", 3: "HIGH", 4: "CRITICAL"}
 
-# This category specifically detects commands piped into a shell. Other category
-# IDs aggregate unrelated behaviors and are not suitable execution-policy gates.
-EXECUTION_RULES = {"exec/shell/pipe_sh"}
+# The pinned rules also match prefixes such as "| sha224sum". Confirm a complete
+# literal shell command in the immutable blob before blocking these indicators.
+DOWNLOAD_PIPE = {"exec/shell/pipe_sh", "c2/tool_transfer/shell"}
+SHELL_PIPE = re.compile(
+    rb"(?<!\|)\|[ \t]*(?:/bin/)?(?:bash|sh)(?=$|[ \t\r\n;|&<>()\"'])"
+)
 CREDENTIAL_UPLOAD = {"credential/cloud/aws", "exfil/curl_post"}
 
 
@@ -57,6 +60,11 @@ class ScanError(RuntimeError):
 def require(condition, message):
     if not condition:
         raise ScanError(message)
+
+
+def has_shell_pipe(data):
+    """Confirm supported literal shell tokens; this is not a shell interpreter."""
+    return SHELL_PIPE.search(data) is not None
 
 
 def tool_environment():
@@ -185,7 +193,11 @@ def snapshot_inputs(source, sha, destination):
         require(
             len(data) == size, "Source blob size changed while preparing the snapshot"
         )
-        manifest[path] = {"sha256": hashlib.sha256(data).hexdigest(), "size": size}
+        manifest[path] = {
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size": size,
+            "shell_pipe": has_shell_pipe(data),
+        }
         # Empty files contain no commands. The scanner otherwise calls them skipped.
         if size == 0:
             continue
@@ -336,6 +348,13 @@ def evaluate(report, manifest):
     )
     files = report.get("Files")
     require(isinstance(files, dict), "Scanner report does not contain a file inventory")
+    require(
+        all(
+            "gitlink" in entry or type(entry.get("shell_pipe")) is bool
+            for entry in manifest.values()
+        ),
+        "Source manifest does not contain verified shell-token evidence",
+    )
     expected = {
         "/source/" + path: entry
         for path, entry in manifest.items()
@@ -409,8 +428,10 @@ def evaluate(report, manifest):
                 "Scanner returned invalid rule or severity evidence",
             )
             categories.add(category)
-            if score == 4 or category in EXECUTION_RULES:
+            if score == 4:
                 blocking.append((category + "/" + rule, severity))
+        if DOWNLOAD_PIPE <= categories and entry["shell_pipe"]:
+            blocking.append(("download-with-direct-shell-pipe", "MEDIUM"))
         if CREDENTIAL_UPLOAD <= categories:
             blocking.append(("credential-access-with-upload", "MEDIUM"))
         if file_score == 4 and not any(
@@ -429,7 +450,7 @@ def summary(result):
     report = f"Script security: {'FAIL' if findings else 'PASS'}. Blocking findings: {len(findings)}."
     rows = [
         report,
-        f"Scanner: Malcontent {SCANNER_VERSION}. Policy: Critical, shell pipes, AWS credential access with upload.",
+        f"Scanner: Malcontent {SCANNER_VERSION}. Policy: Critical, download/direct-shell pipes, AWS credential access with upload.",
         f"Root-repository files: {result['file_count']}; verified empty files: {result['empty_files']}.",
     ]
     if findings:

