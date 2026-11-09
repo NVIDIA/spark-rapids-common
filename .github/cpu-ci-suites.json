@@ -13,6 +13,8 @@
       "paths": [
         "resolve-toolchain-config/",
         "container-image/",
+        "ghcr-cleanup/",
+        ".github/workflows/image-cleanup.yml",
         ".github/workflows/image-build.yml",
         ".github/image-builds.json"
       ],
@@ -25,7 +27,6 @@
       "paths": [
         "runner-queue-fallback/",
         ".github/workflows/image-build.yml",
-        ".github/workflows/image-build-worker.yml",
         ".github/image-builds.json"
       ],
       "exclude_paths": ["**/*.md"],
