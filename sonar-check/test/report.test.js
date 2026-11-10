@@ -219,6 +219,7 @@ test('publishes one successful summary and exact named commit status', async t =
   assert.match(f.comments[0].body, /No current PR findings/);
   assert.equal(f.statuses()[0].context, 'Sonar check');
   assert.equal(f.statuses()[0].state, 'success');
+  assert.equal(f.statuses()[0].description, 'Sonar passed: 0 High, 0 Blocker issues.');
   assert.equal(f.statuses()[0].sha, sha);
   assert.equal(f.statuses()[0].owner, 'test-org');
   assert.equal(f.statuses()[0].repo, 'project');
@@ -401,9 +402,10 @@ for (const [change, reason] of [
   [{ gateStatus: 'ERROR' }, 'quality gate did not pass (ERROR)'],
   [{ gateStatus: 'WARN' }, 'quality gate did not pass (WARN)'],
   [{ gateStatus: 'NONE' }, 'quality gate did not pass (NONE)'],
-  [{ high: 1 }, '1 new High issue'],
-  [{ blocker: 1 }, '1 new Blocker issue'],
-  [{ high: 2, blocker: 1 }, '1 new Blocker and 2 new High issues'],
+  [{ high: 1 }, '1 High, 0 Blocker issues'],
+  [{ high: 2 }, '2 High, 0 Blocker issues'],
+  [{ blocker: 1 }, '0 High, 1 Blocker issues'],
+  [{ high: 2, blocker: 1 }, '2 High, 1 Blocker issues'],
   [{ passed: false }, 'analysis was not marked as passed'],
 ]) {
   test(`valid failing gate evidence ${JSON.stringify(change)} remains a failure`, async t => {
@@ -431,8 +433,8 @@ test('verified High findings explain a failed scanner without listing unrelated 
   const f = fixture(t, result({ passed: false, gateStatus: 'ERROR', high: 1 }));
   f.options.scanResult = 'failure';
   assert.equal((await f.run()).passed, false);
-  assert.equal(f.statuses()[0].description, 'Sonar failed: 1 new High issue.');
-  assert.match(f.comments[0].body, /Sonar check: FAIL — 1 new High issue/);
+  assert.equal(f.statuses()[0].description, 'Sonar failed: 1 High, 0 Blocker issues.');
+  assert.match(f.comments[0].body, /Sonar check: FAIL — 1 High, 0 Blocker issues/);
   assert.doesNotMatch(f.comments[0].body, /scan job failed|publication failed|verification did not pass/);
 });
 
@@ -463,7 +465,7 @@ test('maximum verified issue counts fit the commit status limit', async t => {
   assert.equal((await f.run()).passed, false);
   assert.equal(
     f.statuses()[0].description,
-    'Sonar failed: 9007199254740991 new Blocker and 9007199254740991 new High issues.',
+    'Sonar failed: 9007199254740991 High, 9007199254740991 Blocker issues.',
   );
 });
 

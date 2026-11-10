@@ -259,16 +259,8 @@ function link(value) {
 
 function analysisFailure(evidence, scanResult) {
   if (evidence) {
-    const findings = [];
-    if (evidence.blocker > 0) {
-      findings.push(`${evidence.blocker} new Blocker`);
-    }
-    if (evidence.high > 0) {
-      findings.push(`${evidence.high} new High`);
-    }
-    if (findings.length) {
-      const plural = evidence.blocker + evidence.high === 1 ? 'issue' : 'issues';
-      return `${findings.join(' and ')} ${plural}`;
+    if (evidence.high > 0 || evidence.blocker > 0) {
+      return `${evidence.high} High, ${evidence.blocker} Blocker issues`;
     }
     if (evidence.gateStatus !== 'OK') {
       return `quality gate did not pass (${evidence.gateStatus})`;
@@ -543,7 +535,7 @@ async function report({ github, core, context, options }) {
       context: 'Sonar check',
       state: passed ? 'success' : 'failure',
       description: passed
-        ? 'Sonar passed: no new High or Blocker issues.'
+        ? 'Sonar passed: 0 High, 0 Blocker issues.'
         : `Sonar failed: ${reason}.`,
       target_url: `${target.server}/${target.repository}/actions/runs/${target.runId}/attempts/${target.runAttempt}`,
       request,
