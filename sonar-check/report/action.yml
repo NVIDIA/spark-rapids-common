@@ -15,9 +15,11 @@
 name: Report Sonar check
 description: Publish exact-analysis Sonar evidence to its commit and pull request
 inputs:
+  phase:
+    description: Set the scoped status pending before scanning, or publish the final report
+    default: report
   result-path:
-    description: Path to the schema 2 JSON result from the collector
-    required: true
+    description: Required for phase report; path to the schema 2 JSON result from the collector
   pr-number:
     description: Pull request in the current repository
     required: true
@@ -28,11 +30,9 @@ inputs:
     description: Approved target branch supplied to the scanner and collector
     required: true
   source-attempt:
-    description: Required producer run attempt, including when only the reporter is rerun
-    required: true
+    description: Required for phase report; producer run attempt, including reporter-only reruns
   scan-result:
-    description: Scan job result - success, failure, cancelled, or skipped
-    required: true
+    description: Required for phase report; scan job result (success, failure, cancelled, or skipped)
   sonar-url:
     description: Expected HTTPS Sonar server base URL, including any context path
     required: true
@@ -49,6 +49,7 @@ runs:
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       env:
         SONAR_REPORT_ACTION_PATH: ${{ github.action_path }}
+        SONAR_REPORT_PHASE: ${{ inputs.phase }}
         SONAR_RESULT_PATH: ${{ inputs.result-path }}
         SONAR_PR_NUMBER: ${{ inputs.pr-number }}
         SONAR_SHA: ${{ inputs.sha }}

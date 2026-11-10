@@ -11,8 +11,8 @@ this change.
   It verifies the CE task's project, PR, target branch and scanner revision, then
   retrieves the quality gate and High/Blocker counts by **analysis ID**.
 - `sonar-check/report` runs with a GitHub token, upserts a summary comment and
-  sets the **Sonar check** commit status. It needs no Sonar credential or network
-  access to Sonar. Node 24 is supplied by its pinned GitHub Script action.
+  sets a **Sonar check / PR #N / scope** commit status. It needs no Sonar credential
+  or network access to Sonar. Node 24 is supplied by its pinned GitHub Script action.
 
 The Sonar result fails on a failed scanner, non-OK gate, or any new High/Blocker
 issue. Missing or mismatched evidence also fails. Medium Sonar findings alone do
@@ -38,9 +38,38 @@ actions as `base-ref`; do not rely on scanner autodetection for this property.
 The examples use `needs.approve.outputs.base-ref` from trusted approval metadata.
 Use a fresh task file from that invocation; a matching older scan of the same SHA
 is not a new invocation.
-Set `Sonar check` pending on that SHA before scanning and serialize runs for the
-same PR; different PRs can run concurrently. Rerun approval and scanning when the
-PR target branch changes (`pull_request.edited`), as well as on new commits.
+Call the report action with `phase: pending` on that SHA before scanning, then
+use its default `report` phase after collection. Both phases derive the same
+status context from the PR number and a digest of the full target branch, Sonar
+URL and project. This prevents one PR or Sonar target from overwriting another
+result when they share a commit. Summary comments use the same scope, so projects
+reported in one run keep separate comments. Pin both phases to the same reviewed
+action revision. New consumers must not write or require the old unqualified
+`Sonar check` context. Preserve any existing required checks until a consumer's
+merge-policy migration is explicitly approved. Serialize runs for the same PR;
+different PRs can run concurrently.
+Rerun approval and scanning when the PR target branch changes
+(`pull_request.edited`), as well as on new commits.
+
+The status context varies by PR and is not a single fixed branch-protection gate.
+GitHub commit statuses and ordinary required check names are commit-scoped;
+a fixed-name workflow job alone does not establish PR isolation. Configure and
+validate production merge-policy enforcement separately before requiring this
+workflow. This action does not change repository rules.
+
+After trusted approval, set pending in a hosted job with `statuses: write` and
+pull-request read access. It publishes no comment and needs no result artifact:
+
+```yaml
+- uses: NVIDIA/spark-rapids-common/sonar-check/report@<reviewed-commit>
+  with:
+    phase: pending
+    pr-number: ${{ github.event.pull_request.number }}
+    sha: ${{ needs.approve.outputs.sha }}
+    base-ref: ${{ needs.approve.outputs.base-ref }}
+    sonar-url: ${{ vars.SONAR_URL }}
+    project: ${{ vars.SONAR_PROJECT_KEY }}
+```
 
 Run the scanner and collector in a fresh trusted environment that has not executed
 PR build scripts. Later step-local secrets do not isolate a compromised workspace,
@@ -101,8 +130,10 @@ this job. Do not pass the Sonar or runner-administration token to it.
     sonar-url: ${{ vars.SONAR_URL }}
 ```
 
-Reporting verifies the repository, PR, SHA, target branch, run, producing attempt
-and project identity. It uses the current workflow token by default
+The default `phase: report` requires `result-path`, `source-attempt` and
+`scan-result`; the pending phase does not. Reporting verifies the repository, PR,
+SHA, target branch, run, producing attempt and project identity.
+It uses the current workflow token by default
 (`github-token` can supply a bot PAT).
 Custom GitHub App tokens are not supported without a verified comment identity.
 It publishes only to the approved SHA, annotates an advanced PR, and fails if the

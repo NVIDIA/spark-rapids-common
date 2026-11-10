@@ -15,6 +15,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const { createHash } = require('node:crypto');
 const shaPattern = /^[a-f0-9]{40}$/i;
 const decimalPattern = /^[1-9][0-9]*$/;
 const severities = ['BLOCKER', 'HIGH', 'MEDIUM', 'LOW', 'INFO'];
@@ -22,6 +23,7 @@ const request = { timeout: 30000 };
 
 function optionsFromEnv(env) {
   return {
+    phase: env.SONAR_REPORT_PHASE || 'report',
     resultPath: env.SONAR_RESULT_PATH,
     prNumber: env.SONAR_PR_NUMBER,
     sha: env.SONAR_SHA,
@@ -97,6 +99,26 @@ function identity(context, options) {
   };
 }
 
+function publicationScope(options, target) {
+  const phase = options.phase === undefined ? 'report' : options.phase;
+  requireValue(['pending', 'report'].includes(phase));
+  requireValue(text(options.project, 400));
+  requireValue(text(options.baseRef, 1024) && !/\s/.test(options.baseRef));
+  const sonarUrl = baseUrl(options.sonarUrl);
+  // Commit statuses are shared across PRs with the same SHA. Keep every analysis
+  // scope separate, including branch names that differ only by case. The digest
+  // bounds the context without exposing the service URL or project key in it.
+  const digest = createHash('sha256')
+    .update(JSON.stringify([sonarUrl, options.project, options.baseRef]))
+    .digest('hex')
+    .slice(0, 32);
+  return {
+    sonarUrl,
+    scopeId: digest,
+    statusContext: `Sonar check / PR #${target.pr} / ${digest}`,
+  };
+}
+
 function validateOptions(options, target) {
   requireValue(
     typeof options.sourceAttempt === 'string' &&
@@ -105,9 +127,7 @@ function validateOptions(options, target) {
       Number(options.sourceAttempt) <= Number(target.runAttempt),
   );
   requireValue(['success', 'failure', 'cancelled', 'skipped'].includes(options.scanResult));
-  requireValue(text(options.resultPath, 4096) && text(options.project, 400));
-  requireValue(text(options.baseRef, 1024) && !/\s/.test(options.baseRef));
-  return baseUrl(options.sonarUrl);
+  requireValue(text(options.resultPath, 4096));
 }
 
 function capturedAt(value) {
@@ -427,6 +447,43 @@ async function publishComment(github, target, body, marker, actionsToken) {
   }
 }
 
+async function publishPending(github, core, target, options, statusContext) {
+  try {
+    const { data: pr } = await github.rest.pulls.get({
+      owner: target.owner,
+      repo: target.repo,
+      pull_number: target.pr,
+      request,
+    });
+    requireValue(
+      pr?.number === target.pr &&
+        pr.base?.repo?.full_name === target.repository &&
+        pr.base.ref === options.baseRef &&
+        typeof pr.head?.sha === 'string' &&
+        pr.head.sha.toLowerCase() === target.sha,
+    );
+  } catch {
+    core.setFailed('Sonar pending target could not be verified; no status was published.');
+    return { passed: false, published: false, statusPublished: false };
+  }
+  try {
+    await github.rest.repos.createCommitStatus({
+      owner: target.owner,
+      repo: target.repo,
+      sha: target.sha,
+      context: statusContext,
+      state: 'pending',
+      description: 'Sonar analysis is pending.',
+      target_url: `${target.server}/${target.repository}/actions/runs/${target.runId}/attempts/${target.runAttempt}`,
+      request,
+    });
+    return { passed: false, published: false, statusPublished: true };
+  } catch {
+    core.setFailed('Sonar pending publication was not confirmed; no automatic retry was attempted.');
+    return { passed: false, published: false, statusPublished: false };
+  }
+}
+
 async function report({ github, core, context, options }) {
   let target;
   try {
@@ -439,12 +496,22 @@ async function report({ github, core, context, options }) {
       statusPublished: false,
     };
   }
+  let scope;
+  try {
+    scope = publicationScope(options, target);
+  } catch {
+    core.setFailed('Invalid Sonar reporting scope; no publication target is safe.');
+    return { passed: false, published: false, statusPublished: false };
+  }
+  if (options.phase === 'pending') {
+    return publishPending(github, core, target, options, scope.statusContext);
+  }
   let evidence;
   let validOptions = false;
   try {
-    const sonarUrl = validateOptions(options, target);
+    validateOptions(options, target);
     validOptions = true;
-    evidence = validateResult(await readResult(options.resultPath), target, options, sonarUrl);
+    evidence = validateResult(await readResult(options.resultPath), target, options, scope.sonarUrl);
     try {
       validateDetails(evidence);
     } catch {
@@ -502,7 +569,7 @@ async function report({ github, core, context, options }) {
       if (retargeted) {
         reason = 'target branch changed; rerun scan';
       }
-      const marker = `<!-- sonar-check:${target.repository}:${target.pr}:${target.runId}:${options.sourceAttempt} -->`;
+      const marker = `<!-- sonar-check:${target.repository}:${target.pr}:${target.runId}:${options.sourceAttempt}:${scope.scopeId} -->`;
       const body = summary(
         target,
         options,
@@ -532,7 +599,7 @@ async function report({ github, core, context, options }) {
       owner: target.owner,
       repo: target.repo,
       sha: target.sha,
-      context: 'Sonar check',
+      context: scope.statusContext,
       state: passed ? 'success' : 'failure',
       description: passed
         ? 'Sonar passed: 0 High, 0 Blocker issues.'

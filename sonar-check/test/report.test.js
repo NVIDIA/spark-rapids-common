@@ -24,7 +24,8 @@ const sha = 'a'.repeat(40);
 const baseRef = 'release/26.12';
 const repository = 'test-org/project';
 const sonarUrl = 'https://sonar.example.test';
-const marker = '<!-- sonar-check:test-org/project:7:123:1 -->';
+const statusContext = 'Sonar check / PR #7 / 6f08ff44f51824640bc11b410f5a72fb';
+const marker = '<!-- sonar-check:test-org/project:7:123:1:6f08ff44f51824640bc11b410f5a72fb -->';
 const bot = {
   id: 41898282,
   type: 'Bot',
@@ -174,9 +175,40 @@ function fixture(t, evidence = result()) {
   return f;
 }
 
+function scopedFixture(t, changes = {}) {
+  const options = {
+    prNumber: '7',
+    baseRef,
+    sonarUrl,
+    project: 'project-key',
+    ...changes,
+  };
+  const reportUrl = new URL(`${options.sonarUrl.replace(/\/+$/, '')}/dashboard`);
+  reportUrl.search = new URLSearchParams({ id: options.project, pullRequest: options.prNumber });
+  const f = fixture(
+    t,
+    result({
+      pr: Number(options.prNumber),
+      baseRef: options.baseRef,
+      project: options.project,
+      reportUrl: reportUrl.href,
+    }),
+  );
+  Object.assign(f.options, options);
+  f.handlers.pull = () => ({
+    data: {
+      number: Number(options.prNumber),
+      base: { ref: options.baseRef, repo: { full_name: repository } },
+      head: { sha },
+    },
+  });
+  return f;
+}
+
 test('maps inputs without accepting repository or run overrides', () => {
   assert.deepEqual(
     optionsFromEnv({
+      SONAR_REPORT_PHASE: 'pending',
       SONAR_RESULT_PATH: 'r.json',
       SONAR_PR_NUMBER: '7',
       SONAR_SHA: sha,
@@ -190,6 +222,7 @@ test('maps inputs without accepting repository or run overrides', () => {
       GITHUB_RUN_ID: '999',
     }),
     {
+      phase: 'pending',
       resultPath: 'r.json',
       prNumber: '7',
       sha,
@@ -203,7 +236,11 @@ test('maps inputs without accepting repository or run overrides', () => {
   );
 });
 
-test('publishes one successful summary and exact named commit status', async t => {
+test('defaults the adapter phase to final reporting', () => {
+  assert.equal(optionsFromEnv({}).phase, 'report');
+});
+
+test('publishes one successful summary and exact scoped commit status', async t => {
   const f = fixture(t);
   assert.deepEqual(await f.run(), {
     passed: true,
@@ -217,13 +254,192 @@ test('publishes one successful summary and exact named commit status', async t =
   );
   assert.ok(f.comments[0].body.startsWith(marker + '\n'));
   assert.match(f.comments[0].body, /No current PR findings/);
-  assert.equal(f.statuses()[0].context, 'Sonar check');
+  assert.equal(f.statuses()[0].context, statusContext);
   assert.equal(f.statuses()[0].state, 'success');
   assert.equal(f.statuses()[0].description, 'Sonar passed: 0 High, 0 Blocker issues.');
   assert.equal(f.statuses()[0].sha, sha);
   assert.equal(f.statuses()[0].owner, 'test-org');
   assert.equal(f.statuses()[0].repo, 'project');
 });
+
+test('a successful different PR cannot overwrite a failure on the same commit', async t => {
+  const failed = fixture(t, result({ passed: false, gateStatus: 'ERROR', high: 1 }));
+  const passed = scopedFixture(t, { prNumber: '8' });
+  assert.equal((await failed.run()).passed, false);
+  assert.equal((await passed.run()).passed, true);
+  const latestStatuses = new Map();
+  for (const status of [...failed.statuses(), ...passed.statuses()]) {
+    latestStatuses.set(`${status.sha}:${status.context.toLowerCase()}`, status.state);
+  }
+  assert.equal(latestStatuses.size, 2);
+  assert.equal(latestStatuses.get(`${sha}:${statusContext.toLowerCase()}`), 'failure');
+});
+
+test('different Sonar projects preserve their own summaries within the same PR and run', async t => {
+  const failed = fixture(t, result({ passed: false, gateStatus: 'ERROR', high: 1 }));
+  const passed = scopedFixture(t, { project: 'other-project' });
+  passed.comments = failed.comments;
+  assert.equal((await failed.run()).passed, false);
+  assert.equal((await passed.run()).passed, true);
+  assert.equal(failed.comments.length, 2);
+  assert.ok(failed.comments[0].body.startsWith(marker + '\n'));
+  assert.match(failed.comments[0].body, /Sonar check: FAIL/);
+  assert.match(failed.comments[1].body, /Sonar check: PASS/);
+  assert.notEqual(
+    failed.comments[0].body.split('\n')[0],
+    failed.comments[1].body.split('\n')[0],
+  );
+  const passingBody = failed.comments[1].body;
+  assert.equal((await failed.run()).passed, false);
+  assert.equal(failed.comments.length, 2);
+  assert.equal(failed.comments[1].body, passingBody);
+  assert.equal(failed.calls.filter(call => call.name === 'update').length, 1);
+});
+
+for (const [name, changes] of [
+  ['target branch', { baseRef: 'main' }],
+  ['target branch case', { baseRef: 'Release/26.12' }],
+  ['Sonar project', { project: 'other-project' }],
+  ['Sonar project case', { project: 'PROJECT-KEY' }],
+  ['Sonar service', { sonarUrl: 'https://other-sonar.example.test' }],
+  ['Sonar context path', { sonarUrl: `${sonarUrl}/sonar` }],
+]) {
+  test(`separates ${name} on the same PR and commit`, async t => {
+    const f = scopedFixture(t, changes);
+    assert.equal((await f.run()).passed, true);
+    assert.notEqual(f.statuses()[0].context.toLowerCase(), statusContext.toLowerCase());
+    assert.match(f.statuses()[0].context, /^Sonar check \/ PR #7 \/ [a-f0-9]{32}$/);
+    assert.equal(f.statuses()[0].sha, sha);
+  });
+}
+
+test('preserves case-sensitive Sonar context paths in case-insensitive status contexts', async t => {
+  const lower = scopedFixture(t, { sonarUrl: `${sonarUrl}/sonar` });
+  const upper = scopedFixture(t, { sonarUrl: `${sonarUrl}/Sonar` });
+  assert.equal((await lower.run()).passed, true);
+  assert.equal((await upper.run()).passed, true);
+  assert.notEqual(
+    lower.statuses()[0].context.toLowerCase(),
+    upper.statuses()[0].context.toLowerCase(),
+  );
+});
+
+test('normalizes equivalent Sonar service URLs to the same context', async t => {
+  const f = scopedFixture(t, { sonarUrl: 'https://SONAR.EXAMPLE.TEST:443///' });
+  assert.equal((await f.run()).passed, true);
+  assert.equal(f.statuses()[0].context, statusContext);
+});
+
+test('keeps long target branches bounded and out of the status context', async t => {
+  const f = scopedFixture(t, { baseRef: `release/${'a'.repeat(1000)}` });
+  assert.equal((await f.run()).passed, true);
+  const context = f.statuses()[0].context;
+  assert.match(context, /^Sonar check \/ PR #7 \/ [a-f0-9]{32}$/);
+  assert.equal(context.length, statusContext.length);
+  assert.ok(!context.includes(f.options.baseRef));
+  assert.ok(!context.includes(f.options.project));
+  assert.ok(!context.includes(f.options.sonarUrl));
+});
+
+test('keeps the same status context across workflow runs and producing attempts', async t => {
+  const f = fixture(t);
+  assert.equal((await f.run()).passed, true);
+  f.context.runId = 124;
+  f.context.runAttempt = 2;
+  f.options.sourceAttempt = '2';
+  fs.writeFileSync(
+    f.options.resultPath,
+    JSON.stringify(result({ runId: '124', runAttempt: '2' })),
+  );
+  assert.equal((await f.run()).passed, true);
+  assert.deepEqual(f.statuses().map(status => status.context), [statusContext, statusContext]);
+});
+
+test('pending verifies approval and publishes without scan evidence or comment access', async t => {
+  const f = fixture(t);
+  fs.unlinkSync(f.options.resultPath);
+  Object.assign(f.options, {
+    phase: 'pending',
+    resultPath: undefined,
+    sourceAttempt: 'invalid',
+    scanResult: 'not-started',
+  });
+  assert.deepEqual(await f.run(), {
+    passed: false,
+    published: false,
+    statusPublished: true,
+  });
+  assert.deepEqual(f.calls.map(call => call.name), ['pull', 'status']);
+  assert.equal(f.failures.length, 0);
+  assert.equal(f.statuses()[0].state, 'pending');
+  assert.equal(f.statuses()[0].context, statusContext);
+  assert.equal(f.statuses()[0].sha, sha);
+  assert.equal(f.statuses()[0].owner, 'test-org');
+  assert.equal(f.statuses()[0].repo, 'project');
+});
+
+test('pending and final publication use the same status context', async t => {
+  const f = fixture(t);
+  f.options.phase = 'pending';
+  assert.equal((await f.run()).statusPublished, true);
+  f.options.phase = 'report';
+  assert.equal((await f.run()).passed, true);
+  assert.deepEqual(f.statuses().map(status => status.state), ['pending', 'success']);
+  assert.deepEqual(f.statuses().map(status => status.context), [statusContext, statusContext]);
+  assert.equal(f.comments.length, 1);
+});
+
+for (const [name, changes] of [
+  ['different PR number', { number: 8 }],
+  ['stale head', { head: { sha: 'b'.repeat(40) } }],
+  ['missing head', { head: null }],
+  ['retargeted branch', { base: { ref: 'main', repo: { full_name: repository } } }],
+  ['different repository', { base: { ref: baseRef, repo: { full_name: 'other/repo' } } }],
+]) {
+  test(`pending rejects ${name} without publishing`, async t => {
+    const f = fixture(t);
+    f.options.phase = 'pending';
+    f.handlers.pull = () => ({
+      data: {
+        number: 7,
+        base: { ref: baseRef, repo: { full_name: repository } },
+        head: { sha },
+        ...changes,
+      },
+    });
+    assert.deepEqual(await f.run(), {
+      passed: false,
+      published: false,
+      statusPublished: false,
+    });
+    assert.deepEqual(f.calls.map(call => call.name), ['pull']);
+    assert.equal(f.failures.length, 1);
+  });
+}
+
+for (const failing of ['pull', 'status']) {
+  test(`pending ${failing} errors fail without retry or raw diagnostics`, async t => {
+    const f = fixture(t);
+    f.options.phase = 'pending';
+    f.handlers[failing] = () => {
+      throw Object.assign(new Error('PRIVATE_TOKEN PRIVATE_RESPONSE'), {
+        status: failing === 'pull' ? 403 : 504,
+      });
+    };
+    assert.deepEqual(await f.run(), {
+      passed: false,
+      published: false,
+      statusPublished: false,
+    });
+    assert.deepEqual(
+      f.calls.map(call => call.name),
+      failing === 'pull' ? ['pull'] : ['pull', 'status'],
+    );
+    assert.equal(f.failures.length, 1);
+    assert.doesNotMatch(JSON.stringify([...f.failures, ...f.warnings]), /PRIVATE/);
+    assert.equal(f.comments.length, 0);
+  });
+}
 
 test('authoritative gate passes with unavailable details without claiming zero issues', async t => {
   const f = fixture(
@@ -618,7 +834,7 @@ test('does not edit copied markers written by humans or unrelated bots', async t
     {
       id: 4,
       user: bot,
-      body: marker.replace(':1 -->', ':2 -->') + '\nother source attempt',
+      body: marker.replace(':123:1:', ':123:2:') + '\nother source attempt',
     },
   ];
   await f.run();
@@ -861,15 +1077,9 @@ for (const change of [
   { sourceAttempt: '2' },
   { sourceAttempt: '01' },
   { scanResult: 'unknown' },
-  { project: '' },
-  { baseRef: undefined },
-  { baseRef: '' },
-  { baseRef: 'release candidate' },
-  { baseRef: 'main\nother' },
-  { sonarUrl: 'http://sonar.example.test' },
-  { sonarUrl: `${sonarUrl}?token=secret` },
+  { resultPath: '' },
 ]) {
-  test(`invalid reporting options fail on the safe target ${JSON.stringify(change)}`, async t => {
+  test(`invalid report options fail within the verified scope ${JSON.stringify(change)}`, async t => {
     const f = fixture(t);
     Object.assign(f.options, change);
     assert.equal((await f.run()).passed, false);
@@ -877,8 +1087,46 @@ for (const change of [
       f.writes().map(call => call.name),
       ['status'],
     );
+    assert.equal(f.statuses()[0].context, statusContext);
     assert.equal(f.statuses()[0].state, 'failure');
     assert.equal(f.statuses()[0].description, 'Sonar failed: invalid reporting configuration.');
+  });
+}
+
+for (const change of [
+  { project: '' },
+  { project: 'project\nPRIVATE' },
+  { baseRef: undefined },
+  { baseRef: '' },
+  { baseRef: 'release candidate' },
+  { baseRef: 'main\nother' },
+  { sonarUrl: 'http://sonar.example.test' },
+  { sonarUrl: `${sonarUrl}?token=secret` },
+  { sonarUrl: 'https://PRIVATE@sonar.example.test' },
+]) {
+  for (const phase of ['pending', 'report']) {
+    test(`invalid ${phase} scope makes no API calls ${JSON.stringify(change)}`, async t => {
+      const f = fixture(t);
+      Object.assign(f.options, change, { phase });
+      assert.deepEqual(await f.run(), {
+        passed: false,
+        published: false,
+        statusPublished: false,
+      });
+      assert.equal(f.calls.length, 0);
+      assert.equal(f.failures.length, 1);
+      assert.doesNotMatch(JSON.stringify([...f.failures, ...f.warnings]), /PRIVATE|secret/);
+    });
+  }
+}
+
+for (const phase of ['', 'unknown', 42, null]) {
+  test(`invalid phase makes no API calls ${JSON.stringify(phase)}`, async t => {
+    const f = fixture(t);
+    f.options.phase = phase;
+    assert.equal((await f.run()).passed, false);
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.failures.length, 1);
   });
 }
 
@@ -897,6 +1145,7 @@ test('adapter pins supported github-script and disables mutation retries/debug l
   assert.match(action, /debug: false/);
   assert.match(action, /SONAR_REPORT_ACTION_PATH: \$\{\{ github.action_path }}/);
   assert.match(action, /SONAR_BASE_REF: \$\{\{ inputs.base-ref }}/);
+  assert.match(action, /SONAR_REPORT_PHASE: \$\{\{ inputs.phase }}/);
   assert.match(action, /SONAR_REPORT_ACTIONS_TOKEN: \$\{\{ inputs.github-token == github.token }}/);
   const script = action
     .split('        script: |\n')[1]
