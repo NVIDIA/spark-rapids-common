@@ -121,6 +121,9 @@ function fixture(t, evidence = result()) {
   };
   const api = (name, operation) => async args => {
     assert.equal(args.request.timeout, 30000);
+    if (name === 'status') {
+      assert.ok(args.description.length <= 140);
+    }
     f.calls.push({
       name,
       args: structuredClone(args),
@@ -262,7 +265,7 @@ for (const [name, change] of Object.entries({
     assert.equal((await f.run()).passed, false);
     assert.equal(f.statuses()[0].state, 'failure');
     assert.equal(f.failures.length, 1);
-    assert.match(f.comments[0].body, /Scan evidence is missing/);
+    assert.match(f.comments[0].body, /analysis result could not be verified/);
   });
 }
 
@@ -394,19 +397,24 @@ for (const mode of ['missing', 'malformed', 'oversized', 'directory', 'symlink']
   });
 }
 
-for (const change of [
-  { gateStatus: 'ERROR' },
-  { gateStatus: 'WARN' },
-  { gateStatus: 'NONE' },
-  { high: 1 },
-  { blocker: 1 },
-  { passed: false },
+for (const [change, reason] of [
+  [{ gateStatus: 'ERROR' }, 'quality gate did not pass (ERROR)'],
+  [{ gateStatus: 'WARN' }, 'quality gate did not pass (WARN)'],
+  [{ gateStatus: 'NONE' }, 'quality gate did not pass (NONE)'],
+  [{ high: 1 }, '1 new High issue'],
+  [{ blocker: 1 }, '1 new Blocker issue'],
+  [{ high: 2, blocker: 1 }, '1 new Blocker and 2 new High issues'],
+  [{ passed: false }, 'analysis was not marked as passed'],
 ]) {
   test(`valid failing gate evidence ${JSON.stringify(change)} remains a failure`, async t => {
     const f = fixture(t, result(change));
     assert.equal((await f.run()).passed, false);
     assert.equal(f.statuses()[0].state, 'failure');
     assert.match(f.comments[0].body, /Full Sonar report/);
+    assert.equal(f.statuses()[0].description, `Sonar failed: ${reason}.`);
+    assert.ok(f.comments[0].body.includes(`**Sonar check: FAIL — ${reason}.**`));
+    assert.equal(f.failures[0], `Sonar failed: ${reason}.`);
+    assert.doesNotMatch(f.comments[0].body, /policy, or target branch verification/);
   });
 }
 
@@ -418,6 +426,69 @@ for (const scanResult of ['failure', 'cancelled', 'skipped']) {
     assert.equal(f.statuses()[0].state, 'failure');
   });
 }
+
+test('verified High findings explain a failed scanner without listing unrelated causes', async t => {
+  const f = fixture(t, result({ passed: false, gateStatus: 'ERROR', high: 1 }));
+  f.options.scanResult = 'failure';
+  assert.equal((await f.run()).passed, false);
+  assert.equal(f.statuses()[0].description, 'Sonar failed: 1 new High issue.');
+  assert.match(f.comments[0].body, /Sonar check: FAIL — 1 new High issue/);
+  assert.doesNotMatch(f.comments[0].body, /scan job failed|publication failed|verification did not pass/);
+});
+
+for (const [scanResult, reason] of [
+  ['failure', 'scan job failed'],
+  ['cancelled', 'scan was cancelled'],
+  ['skipped', 'scan was skipped'],
+  ['success', 'analysis result could not be verified'],
+]) {
+  test(`unverified evidence reports the known ${scanResult} scan outcome`, async t => {
+    const f = fixture(t, result({ complete: false, high: 99, error: 'SECRET-RAW-ERROR' }));
+    f.options.scanResult = scanResult;
+    assert.equal((await f.run()).passed, false);
+    assert.equal(f.statuses()[0].description, `Sonar failed: ${reason}.`);
+    assert.ok(f.comments[0].body.includes(`FAIL — ${reason}.`));
+    assert.doesNotMatch(f.comments[0].body, /99|SECRET-RAW-ERROR/);
+  });
+}
+
+test('maximum verified issue counts fit the commit status limit', async t => {
+  const f = fixture(
+    t,
+    result({
+      high: Number.MAX_SAFE_INTEGER,
+      blocker: Number.MAX_SAFE_INTEGER,
+    }),
+  );
+  assert.equal((await f.run()).passed, false);
+  assert.equal(
+    f.statuses()[0].description,
+    'Sonar failed: 9007199254740991 new Blocker and 9007199254740991 new High issues.',
+  );
+});
+
+test('retargeting takes precedence over verified findings', async t => {
+  const f = fixture(t, result({ high: 1, gateStatus: 'ERROR' }));
+  f.handlers.pull = () => ({
+    data: {
+      number: 7,
+      base: { ref: 'main', repo: { full_name: repository } },
+      head: { sha },
+    },
+  });
+  assert.equal((await f.run()).passed, false);
+  assert.equal(f.statuses()[0].description, 'Sonar failed: target branch changed; rerun scan.');
+});
+
+test('unconfirmed summary publication takes precedence over analysis findings', async t => {
+  const f = fixture(t, result({ high: 1, gateStatus: 'ERROR' }));
+  f.handlers.create = () => {
+    throw new Error('SECRET-RAW-ERROR');
+  };
+  assert.equal((await f.run()).passed, false);
+  assert.equal(f.statuses()[0].description, 'Sonar failed: summary publication was not confirmed.');
+  assert.equal(f.calls.filter(call => call.name === 'create').length, 1);
+});
 
 test('medium findings do not fail the check', async t => {
   const f = fixture(
@@ -480,6 +551,7 @@ test('retargeted PR fails and explains the changed baseline even on the same SHA
   assert.match(f.comments[0].body, /Sonar check: FAIL/);
   assert.match(f.comments[0].body, /Target branch: \*\*release\/26\.12\*\*/);
   assert.match(f.comments[0].body, /PR target branch has since changed/);
+  assert.equal(f.statuses()[0].description, 'Sonar failed: target branch changed; rerun scan.');
   assert.doesNotMatch(f.comments[0].body, /PR head has since changed/);
   assert.equal(f.statuses()[0].sha, sha);
   assert.equal(f.statuses()[0].state, 'failure');
@@ -650,6 +722,15 @@ for (const failing of ['pull', 'user', 'list', 'create', 'update', 'status']) {
       assert.equal(f.statuses()[0].state, 'failure');
     }
     assert.equal(f.failures.length, 1);
+    const reason = failing === 'pull'
+      ? 'pull request could not be verified'
+      : failing === 'status'
+        ? 'status publication was not confirmed'
+        : 'summary publication was not confirmed';
+    assert.equal(f.failures[0], `Sonar failed: ${reason}.`);
+    if (failing !== 'status') {
+      assert.equal(f.statuses()[0].description, `Sonar failed: ${reason}.`);
+    }
     assert.doesNotMatch([...f.warnings, ...f.failures].join('\n'), /AUTHORIZATION|raw response/);
   });
 }
@@ -795,6 +876,7 @@ for (const change of [
       ['status'],
     );
     assert.equal(f.statuses()[0].state, 'failure');
+    assert.equal(f.statuses()[0].description, 'Sonar failed: invalid reporting configuration.');
   });
 }
 

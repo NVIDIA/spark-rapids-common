@@ -17,6 +17,9 @@ this change.
 The Sonar result fails on a failed scanner, non-OK gate, or any new High/Blocker
 issue. Missing or mismatched evidence also fails. Medium Sonar findings alone do
 not fail this severity policy; other configured quality-gate conditions still apply.
+The status and summary name the verified failure, for example
+`Sonar failed: 1 new High issue.` or `Sonar failed: scan was cancelled.`
+Reporting failures identify the operation whose completion could not be confirmed.
 
 Issue APIs return mutable current PR data, not historical analysis snapshots.
 When available, the summary labels these observations with their collection time

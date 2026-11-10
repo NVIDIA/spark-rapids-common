@@ -257,7 +257,38 @@ function link(value) {
   );
 }
 
-function summary(target, options, evidence, passed, stale, retargeted, marker) {
+function analysisFailure(evidence, scanResult) {
+  if (evidence) {
+    const findings = [];
+    if (evidence.blocker > 0) {
+      findings.push(`${evidence.blocker} new Blocker`);
+    }
+    if (evidence.high > 0) {
+      findings.push(`${evidence.high} new High`);
+    }
+    if (findings.length) {
+      const plural = evidence.blocker + evidence.high === 1 ? 'issue' : 'issues';
+      return `${findings.join(' and ')} ${plural}`;
+    }
+    if (evidence.gateStatus !== 'OK') {
+      return `quality gate did not pass (${evidence.gateStatus})`;
+    }
+  }
+  const scanFailures = {
+    failure: 'scan job failed',
+    cancelled: 'scan was cancelled',
+    skipped: 'scan was skipped',
+  };
+  if (scanFailures[scanResult]) {
+    return scanFailures[scanResult];
+  }
+  if (!evidence) {
+    return 'analysis result could not be verified';
+  }
+  return evidence.passed ? '' : 'analysis was not marked as passed';
+}
+
+function summary(target, options, evidence, passed, stale, retargeted, marker, reason) {
   const run = `${target.server}/${target.repository}/actions/runs/${target.runId}`;
   const scanUrl = `${run}/attempts/${options.sourceAttempt}`;
   const reportUrl = `${run}/attempts/${target.runAttempt}`;
@@ -266,7 +297,7 @@ function summary(target, options, evidence, passed, stale, retargeted, marker) {
     marker,
     '### Sonar check',
     '',
-    `**Sonar check: ${passed ? 'PASS' : 'FAIL'}**`,
+    `**Sonar check: ${passed ? 'PASS' : 'FAIL — ' + reason + '.'}**`,
     '',
     `${evidence ? 'Analyzed' : 'Expected'} commit: [\`${target.sha.slice(0, 12)}\`](${commitUrl}). ` +
       `This result applies only to that commit.${stale ? ' The PR head has since changed.' : ''}`,
@@ -334,16 +365,6 @@ function summary(target, options, evidence, passed, stale, retargeted, marker) {
       'The exact analysis fails for new High or Blocker issues. Medium findings alone do not fail it.',
       '',
       `[Full Sonar report](${link(evidence.reportUrl)})`,
-    );
-    if (!passed) {
-      lines.push(
-        '',
-        'The scan, quality gate, High/Blocker policy, or target branch verification did not pass.',
-      );
-    }
-  } else {
-    lines.push(
-      'Scan evidence is missing, incomplete, invalid, or does not match this repository, commit, PR, target branch, and run.',
     );
   }
   lines.push('', `[Scan run](${scanUrl})`);
@@ -448,8 +469,15 @@ async function report({ github, core, context, options }) {
       };
     }
   } catch {
-    core.warning('Sonar evidence is missing, invalid, incomplete, or mismatched.');
+    core.warning(
+      validOptions
+        ? 'Sonar analysis result could not be verified.'
+        : 'Invalid Sonar reporting configuration.',
+    );
   }
+  let reason = validOptions
+    ? analysisFailure(evidence, options.scanResult)
+    : 'invalid reporting configuration';
   let passed = Boolean(
     evidence &&
       evidence.passed &&
@@ -460,6 +488,7 @@ async function report({ github, core, context, options }) {
   );
   let published = false;
   if (validOptions) {
+    let prVerified = false;
     try {
       const { data: pr } = await github.rest.pulls.get({
         owner: target.owner,
@@ -475,8 +504,12 @@ async function report({ github, core, context, options }) {
           typeof pr.head?.sha === 'string' &&
           shaPattern.test(pr.head.sha),
       );
+      prVerified = true;
       const retargeted = pr.base.ref !== options.baseRef;
       passed = passed && !retargeted;
+      if (retargeted) {
+        reason = 'target branch changed; rerun scan';
+      }
       const marker = `<!-- sonar-check:${target.repository}:${target.pr}:${target.runId}:${options.sourceAttempt} -->`;
       const body = summary(
         target,
@@ -486,12 +519,16 @@ async function report({ github, core, context, options }) {
         pr.head.sha.toLowerCase() !== target.sha,
         retargeted,
         marker,
+        reason,
       );
       await publishComment(github, target, body, marker, options.actionsToken === true);
       published = true;
     } catch {
+      reason = prVerified
+        ? 'summary publication was not confirmed'
+        : 'pull request could not be verified';
       core.warning(
-        'Sonar summary publication was not confirmed; no automatic retry was attempted.',
+        `Sonar ${reason}; no automatic retry was attempted.`,
       );
     }
   }
@@ -507,7 +544,7 @@ async function report({ github, core, context, options }) {
       state: passed ? 'success' : 'failure',
       description: passed
         ? 'Sonar passed: no new High or Blocker issues.'
-        : 'Sonar failed: evidence, quality gate, target branch, or publication failed.',
+        : `Sonar failed: ${reason}.`,
       target_url: `${target.server}/${target.repository}/actions/runs/${target.runId}/attempts/${target.runAttempt}`,
       request,
     });
@@ -516,7 +553,9 @@ async function report({ github, core, context, options }) {
     core.warning('Sonar status publication was not confirmed; no automatic retry was attempted.');
   }
   if (!passed || !statusPublished) {
-    core.setFailed('Sonar check failed; inspect scan evidence and publication results.');
+    core.setFailed(
+      `Sonar failed: ${statusPublished ? reason : 'status publication was not confirmed'}.`,
+    );
   }
   return {
     passed: passed && statusPublished,
