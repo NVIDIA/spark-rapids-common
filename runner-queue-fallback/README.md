@@ -144,6 +144,17 @@ The parent matrix limit applies to that workflow run, not to all repositories or
 simultaneous runs. Keep workflow concurrency and final result gates in the caller;
 there is no shared task-claiming queue or cross-repository worker limit.
 
+### Trusted cache preparation
+
+The default `source-policy: current` stops workers when their source ref changes.
+A trusted cache-preparation coordinator may set the literal
+`source-policy: pinned-after-start` to let an allocated worker finish its original
+SHA. Source checks remain required before dispatch, while queued, and in the
+child's startup guard. Parent cancellation, identity checks and deadlines still apply.
+Use `cancel-in-progress: false` in that coordinator to avoid canceling useful work
+on a newer push. Keep PR validation on the default policy; do not derive this option
+from PR code or dispatch inputs.
+
 ### Choosing CPU or GPU pools
 
 Consumers **must** set `runner-type`, even with an explicit `runners` override.
@@ -271,10 +282,12 @@ and policies are unaffected.
   cancellation, stop with an explicit race error rather than run the workload again.
   GitHub has no atomic cancel-only-if-queued operation: that race can interrupt a
   just-started job, but cannot silently cause a fallback retry.
-- Source changes, parent attempt changes and API/contract errors stop the sequence
+- By default, source changes, parent attempt changes and API/contract errors stop the sequence
   and clean up the active child. The workflow-definition SHA is checked for each
   dispatch. Keep `workflow-ref` stable during a sequence; a protected tag can avoid
-  failures caused by unrelated changes to `main`.
+  failures caused by unrelated changes to `main`. `pinned-after-start` only exempts
+  an allocated worker from later source-ref checks; it does not change approval,
+  the startup guard, workflow-definition checks or cleanup.
 - A newly dispatched child gets a two-minute startup window for run identity and
   job metadata to become visible. The first check waits fifteen seconds, counted within
   that window; pending metadata is then checked every five seconds. Temporary child/job

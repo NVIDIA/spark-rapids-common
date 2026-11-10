@@ -51,6 +51,7 @@ function fixture(t, runners = gpuRunners) {
     'INPUT_GITHUB-TOKEN': 'test-token',
     INPUT_WORKFLOW: 'runner-worker.yml', 'INPUT_WORKFLOW-REF': 'main',
     'INPUT_SOURCE-REF': 'refs/pull/1/merge', 'INPUT_SOURCE-SHA': sourceSha,
+    'INPUT_SOURCE-POLICY': 'current',
     INPUT_RUNNERS: JSON.stringify(runners),
     'INPUT_QUEUE-POLICY': 'standard',
     'INPUT_RUNNER-TYPE': `${family}-${architecture}${gpuCount && gpuCount !== '1' ? `-${gpuCount}gpu` : ''}`,
@@ -136,7 +137,9 @@ function fixture(t, runners = gpuRunners) {
     if (override) return override;
     const json = body => new Response(JSON.stringify(body), {status: 200});
     if (options.method === 'GET' && route === '/commits/main') return json({sha: workflowSha});
-    if (options.method === 'GET' && route === '/commits/refs%2Fpull%2F1%2Fmerge') return json({sha: f.source});
+    if (options.method === 'GET' && route === `/commits/${encodeURIComponent(process.env['INPUT_SOURCE-REF'])}`) {
+      return json({sha: f.source});
+    }
     if (options.method === 'GET' && route === '/actions/runs/7') return json(f.parent);
     if (options.method === 'POST' && route === '/actions/workflows/runner-worker.yml/dispatches') {
       // Catch duplicate/overlapping dispatch even if a scenario otherwise ends successfully.
@@ -645,6 +648,211 @@ for (const reason of ['parent cancellation', 'source change']) {
     assert.equal(f.state(), null);
   });
 }
+
+function trustedCacheFixture(t) {
+  const f = fixture(t, cpuRunners);
+  process.env['INPUT_SOURCE-POLICY'] = 'pinned-after-start';
+  process.env['INPUT_SOURCE-REF'] = 'refs/heads/main';
+  return f;
+}
+
+for (const policy of [undefined, '', 'current']) {
+  test(`source policy ${policy ?? 'omitted'} still cancels an allocated worker`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    if (policy === undefined) delete process.env['INPUT_SOURCE-POLICY'];
+    else process.env['INPUT_SOURCE-POLICY'] = policy;
+    f.onDispatch = run => {
+      f.acquire(run);
+      run.status = run.job.status = 'in_progress';
+    };
+    f.onSleep = () => { f.source = 'c'.repeat(40); };
+    assert.equal(await f.run(), 1);
+    assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled']);
+    assert.match(f.errors.join('\n'), /Source ref changed/);
+    assert.equal(f.state(), null);
+  });
+}
+
+test('invalid source policy fails before any API request', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  process.env['INPUT_SOURCE-POLICY'] = 'pinned';
+  assert.equal(await f.run(), 1);
+  assert.match(f.errors.join('\n'), /source-policy must be current or pinned-after-start/);
+  assert.equal(f.requests.length, 0);
+});
+
+for (const timing of ['before first poll', 'after first poll', 'completed before first poll', 'terminal check']) {
+  test(`trusted worker keeps its SHA when source changes ${timing}`, {timeout: 5000}, async t => {
+    const f = trustedCacheFixture(t);
+    f.onDispatch = run => {
+      f.acquire(run);
+      run.status = run.job.status = 'in_progress';
+      if (timing === 'completed before first poll' || timing === 'terminal check') {
+        f.finish(run, 'success');
+      }
+    };
+    let parentReads = 0;
+    f.beforeRequest = request => {
+      if (request.route === '/actions/runs/7' && ++parentReads === 3 && timing === 'terminal check') {
+        f.source = 'c'.repeat(40);
+      }
+    };
+    f.onSleep = milliseconds => {
+      if (milliseconds === 15000 && ['before first poll', 'completed before first poll'].includes(timing)) {
+        f.source = 'c'.repeat(40);
+      }
+      if (milliseconds === 60000) {
+        f.source = 'c'.repeat(40);
+        f.finish(f.runs[0], 'success');
+      }
+    };
+    assert.equal(await f.run(), 0);
+    assert.equal(f.source, 'c'.repeat(40));
+    assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+    assert.equal(f.runs[0].payload.inputs['source-sha'], sourceSha);
+    assert.equal(f.runs[0].payload.inputs['source-policy'], undefined);
+    assert.ok(f.logs.some(message => message.includes(`Source pinned to ${sourceSha}`)));
+    assert.equal(f.errors.length, 0);
+    assert.equal(f.state(), null);
+  });
+}
+
+test('default policy still rejects a source change during its final check', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  f.onDispatch = run => f.finish(run, 'success');
+  let parentReads = 0;
+  f.beforeRequest = request => {
+    if (request.route === '/actions/runs/7' && ++parentReads === 3) f.source = 'c'.repeat(40);
+  };
+  assert.equal(await f.run(), 1);
+  assert.match(f.errors.join('\n'), /Source ref changed/);
+  assert.equal(f.runs.length, 1);
+  assert.equal(f.state(), null);
+});
+
+test('workload data cannot opt into the trusted source policy', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  process.env.INPUT_WORKLOAD = JSON.stringify({'source-policy': 'pinned-after-start'});
+  f.onDispatch = run => {
+    f.acquire(run);
+    run.status = run.job.status = 'in_progress';
+  };
+  f.onSleep = () => { f.source = 'c'.repeat(40); };
+  assert.equal(await f.run(), 1);
+  assert.match(f.errors.join('\n'), /Source ref changed/);
+  assert.equal(f.runs.length, 1);
+  assert.equal(f.runs[0].conclusion, 'cancelled');
+});
+
+test('trusted completion still checks parent cancellation', {timeout: 5000}, async t => {
+  const f = trustedCacheFixture(t);
+  f.onDispatch = run => f.finish(run, 'success');
+  let parentReads = 0;
+  f.beforeRequest = request => {
+    if (request.route === '/actions/runs/7' && ++parentReads === 3) f.parent.status = 'completed';
+  };
+  assert.equal(await f.run(), 1);
+  assert.match(f.errors.join('\n'), /Parent run is no longer active/);
+  assert.equal(f.runs.length, 1);
+  assert.equal(f.state(), null);
+});
+
+test('trusted source must still be current before dispatch', {timeout: 5000}, async t => {
+  const f = trustedCacheFixture(t);
+  f.source = 'c'.repeat(40);
+  assert.equal(await f.run(), 1);
+  assert.match(f.errors.join('\n'), /Source ref changed/);
+  assert.equal(f.runs.length, 0);
+});
+
+for (const pending of [false, true]) {
+  test(`trusted source change cancels ${pending ? 'unconfirmed metadata' : 'queued worker'}`, {timeout: 5000}, async t => {
+    const f = trustedCacheFixture(t);
+    f.onDispatch = run => {
+      if (pending) run.display_title = 'not-visible-yet';
+    };
+    f.onSleep = () => { f.source = 'c'.repeat(40); };
+    assert.equal(await f.run(), 1);
+    assert.match(f.errors.join('\n'), /Source ref changed/);
+    assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled']);
+    assert.equal(f.state(), null);
+  });
+}
+
+test('trusted source is checked again before dispatching a fallback candidate', {timeout: 5000}, async t => {
+  const f = trustedCacheFixture(t);
+  f.onCancel = run => {
+    f.finish(run, 'cancelled');
+    f.source = 'c'.repeat(40);
+  };
+  assert.equal(await f.run(), 1);
+  assert.match(f.errors.join('\n'), /Source ref changed/);
+  assert.equal(f.runs.length, 1);
+  assert.equal(f.state(), null);
+});
+
+test('trusted policy still checks the workflow definition before fallback', {timeout: 5000}, async t => {
+  const f = trustedCacheFixture(t);
+  let workflowChanged = false;
+  f.onCancel = run => {
+    f.finish(run, 'cancelled');
+    workflowChanged = true;
+  };
+  f.beforeRequest = request => {
+    if (workflowChanged && request.route === '/commits/main') {
+      return new Response(JSON.stringify({sha: 'c'.repeat(40)}), {status: 200});
+    }
+  };
+  assert.equal(await f.run(), 1);
+  assert.match(f.errors.join('\n'), /Trusted workflow ref changed/);
+  assert.equal(f.runs.length, 1);
+  assert.equal(f.state(), null);
+});
+
+for (const reason of ['parent cancellation', 'parent attempt', 'identity change', 'execution timeout', 'workload failure', 'API failure']) {
+  test(`trusted active worker still stops for ${reason}`, {timeout: 5000}, async t => {
+    const f = trustedCacheFixture(t);
+    f.onDispatch = run => {
+      f.acquire(run);
+      run.status = run.job.status = 'in_progress';
+    };
+    f.onSleep = milliseconds => {
+      if (milliseconds !== 60000) return;
+      f.source = 'c'.repeat(40);
+      if (reason === 'parent cancellation') f.parent.status = 'completed';
+      if (reason === 'parent attempt') f.parent.run_attempt = 2;
+      if (reason === 'identity change') f.runs[0].display_title = 'different-request';
+      if (reason === 'workload failure') f.finish(f.runs[0], 'failure');
+    };
+    f.beforeRequest = request => {
+      if (reason === 'API failure' && f.source !== sourceSha && request.route === '/actions/runs/7') {
+        return new Response('', {status: 403});
+      }
+    };
+    assert.equal(await f.run(), 1);
+    assert.equal(f.runs.length, 1);
+    assert.equal(f.runs[0].conclusion, reason === 'workload failure' ? 'failure' : 'cancelled');
+    const expected = {
+      'parent cancellation': /Parent run is no longer active/,
+      'parent attempt': /Parent run is no longer active/,
+      'identity change': /identity mismatch/,
+      'execution timeout': /execution timeout; no fallback/,
+      'workload failure': /failure; no workload retry/,
+      'API failure': /HTTP 403/,
+    };
+    assert.match(f.errors.join('\n'), expected[reason]);
+    assert.equal(f.state(), null);
+  });
+}
+
+test('trusted worker startup guard still rejects a stale SHA', {timeout: 5000}, async t => {
+  const f = trustedCacheFixture(t);
+  process.env.GITHUB_RUN_ID = '100';
+  f.source = 'c'.repeat(40);
+  assert.equal(await f.run('../guard/index'), 1);
+  assert.match(f.errors.join('\n'), /Source ref changed/);
+  assert.equal(f.runs.length, 0);
+});
 
 test('post entry point cleans its own state without cancelling a parallel worker', {timeout: 5000}, async t => {
   const f = fixture(t);
