@@ -15,9 +15,9 @@ Only the scan's own container is cleaned up after completion or failure.
 The policy fails on:
 
 - Critical findings from the supported scanner.
-- Download/dropper and shell-pipeline indicators, confirmed by a direct shell
-  command in the committed text. Command boundaries distinguish `sh` from
-  checksum tools such as `sha224sum`.
+- Download/dropper indicators and a literal shell pipeline in the same committed
+  file. This includes `sh`/`bash` under `/bin` or `/usr/bin`, and multiline
+  pipelines. Command boundaries distinguish shells from tools such as `sha224sum`.
 - AWS credential-path and curl-upload indicators in the same file
   (`credential/cloud/aws` with `exfil/curl_post`). This is suspicious co-occurrence,
   not proof that the credentials flow to the upload.

