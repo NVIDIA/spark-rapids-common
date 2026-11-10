@@ -137,6 +137,11 @@ async function main() {
   if (workflowRef.includes('refs/pull/')) throw new Error('workflow-ref must not be a PR ref');
   const sourceRef = input('source-ref');
   const sourceSha = input('source-sha');
+  const sourcePolicy = process.env['INPUT_SOURCE-POLICY']?.trim() || 'current';
+  if (!['current', 'pinned-after-start'].includes(sourcePolicy)) {
+    throw new Error('source-policy must be current or pinned-after-start');
+  }
+  const pinAfterStart = sourcePolicy === 'pinned-after-start';
   const workload = JSON.parse(input('workload'));
   if (!workload || Array.isArray(workload) || typeof workload !== 'object') {
     throw new Error('workload must be a JSON object');
@@ -145,9 +150,9 @@ async function main() {
   const parentId = process.env.GITHUB_RUN_ID;
   const parentAttempt = process.env.GITHUB_RUN_ATTEMPT;
   const workflowSha = (await api(`/commits/${encodeURIComponent(workflowRef)}`)).sha;
-  const ensureCurrent = async () => {
+  const ensureCurrent = async (sourceMayAdvance = false) => {
     await parentActive(api, parentId, parentAttempt);
-    await currentSource(api, sourceRef, sourceSha);
+    if (!sourceMayAdvance) await currentSource(api, sourceRef, sourceSha);
   };
   const report = (active, outcome, queuedAt) => {
     const wait = queuedAt ? `; observed queue wait ${Math.round((Date.now() - queuedAt) / 1000)}s` : '';
@@ -212,7 +217,9 @@ async function main() {
       let pollRound = 0;
       while (true) {
         pollRound++;
-        await ensureCurrent();
+        // An opted-in worker may have started before this poll sees the new source.
+        // Confirm its identity/allocation before deciding whether freshness is required.
+        await ensureCurrent(pinAfterStart);
         // Dispatch can return before the child's run metadata has finished initializing.
         let state;
         try {
@@ -225,6 +232,9 @@ async function main() {
           throw error;
         }
         const {run, job, metadataPending} = state;
+        if (pinAfterStart && !startedAt && (metadataPending || !acquired(job))) {
+          await currentSource(api, sourceRef, sourceSha);
+        }
         const progress = `Poll #${pollRound}: child ${active.id}; elapsed ${Math.round((Date.now() - dispatchedAt) / 1000)}s`;
         if (metadataPending) {
           console.log(`${progress}; metadata pending (120s startup window): ${metadataPending}; next poll in 5s`);
@@ -240,6 +250,9 @@ async function main() {
         if (acquired(job) && !startedAt) {
           startedAt = Date.now();
           report(active, 'runner acquired; fallback disabled', queuedAt);
+          if (pinAfterStart) {
+            console.log(`Source pinned to ${sourceSha}; later source-ref changes will not stop this worker`);
+          }
         }
         if (run.status === 'completed') {
           console.log(`${progress}; run completed/${run.conclusion}; worker ${job?.conclusion}; polling finished`);
@@ -247,7 +260,7 @@ async function main() {
           if (run.conclusion !== 'success' || job?.conclusion !== 'success' || !startedAt) {
             throw new Error(`Worker ${active.id}: ${run.conclusion}; no workload retry`);
           }
-          await ensureCurrent();
+          await ensureCurrent(pinAfterStart && Boolean(startedAt));
           active = null;
           save(null);
           return;
