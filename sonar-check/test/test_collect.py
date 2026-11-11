@@ -14,6 +14,8 @@
 
 import contextlib
 import copy
+from email.utils import formatdate
+import http.client
 import importlib.util
 import io
 import json
@@ -487,15 +489,334 @@ class CollectionTests(unittest.TestCase):
                 collector.Sonar(host, "secret")
 
     def test_safe_read_retries_are_bounded_and_auth_failures_are_not_retried(self):
-        for status, expected in ((429, 3), (503, 3), (403, 1)):
-            sonar = collector.Sonar(HOST, "secret")
-            error = urllib.error.HTTPError(HOST, status, "secret", {}, None)
-            with patch.object(
-                sonar.opener, "open", side_effect=error
-            ) as opening, patch.object(collector.time, "sleep"):
-                with self.assertRaises(urllib.error.HTTPError):
+        for status in (408, 429, 502, 503, 504, 401, 403, 404, 500):
+            expected = 3 if status in (408, 429, 502, 503, 504) else 1
+            responses = [io.BytesIO(b"PRIVATE_BODY") for _ in range(expected)]
+            errors = [
+                urllib.error.HTTPError(
+                    HOST, status, "PRIVATE_MESSAGE", {"Retry-After": "10"}, response
+                )
+                for response in responses
+            ]
+            with self.subTest(status=status), patch.object(
+                collector.time, "monotonic", return_value=0
+            ), patch.object(collector.time, "sleep") as sleeping:
+                sonar = collector.Sonar(HOST, "secret")
+                with patch.object(
+                    sonar.opener, "open", side_effect=errors
+                ) as opening, self.assertRaises(urllib.error.HTTPError) as raised:
                     sonar.get("ce/task", id="task-1")
-            self.assertEqual(opening.call_count, expected)
+                self.assertIs(raised.exception, errors[-1])
+                self.assertEqual(opening.call_count, expected)
+                self.assertEqual(sleeping.call_count, expected - 1)
+                self.assertTrue(all(response.closed for response in responses))
+
+    def test_retry_after_seconds_recovers_at_the_requested_time(self):
+        clock = [0]
+        attempts = []
+        rejected = io.BytesIO(b"PRIVATE_BODY")
+        recovered = io.BytesIO(b'{"task": {"status": "SUCCESS"}}')
+        error = urllib.error.HTTPError(
+            HOST, 429, "PRIVATE_MESSAGE", {"Retry-After": "10"}, rejected
+        )
+
+        def open_request(request, timeout):
+            attempts.append(clock[0])
+            self.assertEqual(timeout, 30)
+            if len(attempts) == 1:
+                raise error
+            return recovered
+
+        def sleep(delay):
+            self.assertTrue(rejected.closed)
+            clock[0] += delay
+
+        with patch.object(
+            collector.time, "monotonic", side_effect=lambda: clock[0]
+        ), patch.object(collector.time, "sleep", side_effect=sleep) as sleeping:
+            sonar = collector.Sonar(HOST, "secret")
+            with patch.object(sonar.opener, "open", side_effect=open_request):
+                self.assertEqual(
+                    sonar.get("ce/task", id="task-1"),
+                    {"task": {"status": "SUCCESS"}},
+                )
+        self.assertEqual(attempts, [0, 10])
+        sleeping.assert_called_once_with(10)
+        self.assertTrue(rejected.closed and recovered.closed)
+
+    def test_retry_after_dates_zero_and_invalid_headers_choose_safe_delays(self):
+        wall_time = 1700000000
+        cases = [
+            (formatdate(wall_time + 12, usegmt=True), 12),
+            (formatdate(wall_time - 12, usegmt=True), 0),
+            ("0", 0),
+            ("00010", 10),
+            ("599", 599),
+            (None, 3),
+            ("PRIVATE_INVALID", 3),
+            ("-10", 3),
+            ("+10", 3),
+            ("1.5", 3),
+            ("\u0661\u0660", 3),
+        ]
+        for header, expected_delay in cases:
+            clock = [0]
+            attempts = []
+            rejected = io.BytesIO(b"PRIVATE_BODY")
+            headers = {} if header is None else {"Retry-After": header}
+            error = urllib.error.HTTPError(
+                HOST, 503, "PRIVATE_MESSAGE", headers, rejected
+            )
+
+            def open_request(request, timeout):
+                attempts.append(clock[0])
+                self.assertEqual(timeout, min(30, 600 - clock[0]))
+                if len(attempts) == 1:
+                    raise error
+                return io.BytesIO(b"{}")
+
+            def sleep(delay):
+                self.assertTrue(rejected.closed)
+                clock[0] += delay
+
+            with self.subTest(header=header), patch.object(
+                collector.time, "monotonic", side_effect=lambda: clock[0]
+            ), patch.object(
+                collector.time, "time", return_value=wall_time
+            ), patch.object(collector.time, "sleep", side_effect=sleep):
+                sonar = collector.Sonar(HOST, "secret")
+                with patch.object(sonar.opener, "open", side_effect=open_request):
+                    self.assertEqual(sonar.get("ce/task", id="task-1"), {})
+            self.assertEqual(attempts, [0, expected_delay])
+            self.assertTrue(rejected.closed)
+
+    def test_retry_after_must_fit_strictly_inside_the_remaining_budget(self):
+        wall_time = 1700000000
+        cases = [
+            ("601", 0),
+            ("600", 0),
+            ("10", 590),
+            ("10", 591),
+            ("0", 600),
+            ("0", 601),
+            (formatdate(wall_time + 600, usegmt=True), 0),
+            ("9" * 5000, 0),
+        ]
+        for header, response_time in cases:
+            clock = [0]
+            rejected = io.BytesIO(b"PRIVATE_BODY")
+            error = urllib.error.HTTPError(
+                HOST, 429, "PRIVATE_MESSAGE", {"Retry-After": header}, rejected
+            )
+
+            def open_request(request, timeout):
+                clock[0] = response_time
+                raise error
+
+            with self.subTest(
+                header=header[:80], response_time=response_time
+            ), patch.object(
+                collector.time, "monotonic", side_effect=lambda: clock[0]
+            ), patch.object(
+                collector.time, "time", return_value=wall_time
+            ), patch.object(collector.time, "sleep") as sleeping:
+                sonar = collector.Sonar(HOST, "secret")
+                with patch.object(
+                    sonar.opener, "open", side_effect=open_request
+                ) as opening, self.assertRaises(collector.ValidationError) as raised:
+                    sonar.get("ce/task", id="task-1")
+                self.assertEqual(opening.call_count, 1)
+                sleeping.assert_not_called()
+                self.assertTrue(rejected.closed)
+                self.assertNotIn("PRIVATE", str(raised.exception))
+
+    def test_expired_budget_does_not_start_a_request_or_sleep(self):
+        with patch.object(collector.time, "monotonic", return_value=0), patch.object(
+            collector.time, "sleep"
+        ) as sleeping:
+            sonar = collector.Sonar(HOST, "secret")
+            sonar.deadline = 0
+            with patch.object(sonar.opener, "open") as opening, self.assertRaises(
+                collector.ValidationError
+            ):
+                sonar.get("ce/task", id="task-1")
+            opening.assert_not_called()
+            sleeping.assert_not_called()
+
+    def test_network_read_failures_keep_the_existing_retry_limit_and_fallback(self):
+        for error in (urllib.error.URLError("PRIVATE"), TimeoutError("PRIVATE")):
+            with self.subTest(error=type(error).__name__), patch.object(
+                collector.time, "monotonic", return_value=0
+            ), patch.object(collector.time, "sleep") as sleeping:
+                sonar = collector.Sonar(HOST, "secret")
+                with patch.object(
+                    sonar.opener, "open", side_effect=error
+                ) as opening, self.assertRaises(type(error)):
+                    sonar.get("ce/task", id="task-1")
+                self.assertEqual(opening.call_count, 3)
+                self.assertEqual(
+                    [call.args for call in sleeping.call_args_list], [(3,), (3,)]
+                )
+
+    def test_disconnect_and_body_reset_recover_after_closing_the_response(self):
+        for phase, error in (
+            ("open", http.client.RemoteDisconnected("PRIVATE")),
+            ("read", ConnectionResetError("PRIVATE")),
+        ):
+            clock = [0]
+            attempts = []
+            rejected = io.BytesIO(b"PRIVATE_BODY")
+            recovered = io.BytesIO(b"{}")
+
+            def open_request(request, timeout):
+                attempts.append(clock[0])
+                if len(attempts) == 1:
+                    if phase == "open":
+                        raise error
+                    return rejected
+                return recovered
+
+            def sleep(delay):
+                if phase == "read":
+                    self.assertTrue(rejected.closed)
+                clock[0] += delay
+
+            with self.subTest(phase=phase), patch.object(
+                collector.time, "monotonic", side_effect=lambda: clock[0]
+            ), patch.object(
+                collector.time, "sleep", side_effect=sleep
+            ) as sleeping, patch.object(rejected, "read", side_effect=error):
+                sonar = collector.Sonar(HOST, "secret")
+                with patch.object(sonar.opener, "open", side_effect=open_request):
+                    self.assertEqual(sonar.get("ce/task", id="task-1"), {})
+                self.assertEqual(attempts, [0, 3])
+                sleeping.assert_called_once_with(3)
+                self.assertTrue(recovered.closed)
+            rejected.close()
+
+    def test_disconnect_and_body_reset_exhaust_after_three_attempts(self):
+        for phase, error in (
+            ("open", http.client.RemoteDisconnected("PRIVATE")),
+            ("read", ConnectionResetError("PRIVATE")),
+        ):
+            responses = [io.BytesIO(b"PRIVATE_BODY") for _ in range(3)]
+            attempts = []
+
+            def open_request(request, timeout):
+                response = responses[len(attempts)]
+                attempts.append(response)
+                if phase == "open":
+                    raise error
+                return response
+
+            def sleep(delay):
+                if phase == "read":
+                    self.assertTrue(attempts[-1].closed)
+
+            with self.subTest(phase=phase), contextlib.ExitStack() as stack:
+                stack.enter_context(
+                    patch.object(collector.time, "monotonic", return_value=0)
+                )
+                sleeping = stack.enter_context(
+                    patch.object(collector.time, "sleep", side_effect=sleep)
+                )
+                for response in responses:
+                    stack.enter_context(patch.object(response, "read", side_effect=error))
+                sonar = collector.Sonar(HOST, "secret")
+                with patch.object(
+                    sonar.opener, "open", side_effect=open_request
+                ) as opening, self.assertRaises(type(error)):
+                    sonar.get("ce/task", id="task-1")
+                self.assertEqual(opening.call_count, 3)
+                self.assertEqual(
+                    [call.args for call in sleeping.call_args_list], [(3,), (3,)]
+                )
+                if phase == "read":
+                    self.assertTrue(all(response.closed for response in responses))
+            for response in responses:
+                response.close()
+
+    def test_unrelated_http_protocol_errors_are_not_retried(self):
+        with patch.object(collector.time, "monotonic", return_value=0), patch.object(
+            collector.time, "sleep"
+        ) as sleeping:
+            sonar = collector.Sonar(HOST, "secret")
+            with patch.object(
+                sonar.opener, "open", side_effect=http.client.BadStatusLine("PRIVATE")
+            ) as opening, self.assertRaises(http.client.BadStatusLine):
+                sonar.get("ce/task", id="task-1")
+            opening.assert_called_once()
+            sleeping.assert_not_called()
+
+    def test_truncated_chunked_http_response_recovers_or_stops_after_three_attempts(self):
+        class MemorySocket:
+            def makefile(self, mode):
+                self.stream = io.BytesIO(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nabc"
+                )
+                return self.stream
+
+        for failures in (1, 3):
+            clock = [0]
+            attempts = []
+            responses = []
+            sockets = []
+            for _ in range(failures):
+                socket = MemorySocket()
+                response = http.client.HTTPResponse(socket)
+                response.begin()
+                sockets.append(socket)
+                responses.append(response)
+
+            def open_request(request, timeout):
+                attempts.append(clock[0])
+                if len(attempts) <= failures:
+                    return responses[len(attempts) - 1]
+                return io.BytesIO(b"{}")
+
+            def sleep(delay):
+                self.assertTrue(responses[len(attempts) - 1].closed)
+                self.assertTrue(sockets[len(attempts) - 1].stream.closed)
+                clock[0] += delay
+
+            with self.subTest(failures=failures), patch.object(
+                collector.time, "monotonic", side_effect=lambda: clock[0]
+            ), patch.object(collector.time, "sleep", side_effect=sleep):
+                sonar = collector.Sonar(HOST, "secret")
+                with patch.object(sonar.opener, "open", side_effect=open_request):
+                    if failures == 1:
+                        self.assertEqual(sonar.get("ce/task", id="task-1"), {})
+                    else:
+                        with self.assertRaises(http.client.IncompleteRead):
+                            sonar.get("ce/task", id="task-1")
+            self.assertEqual(attempts, [0, 3] if failures == 1 else [0, 3, 6])
+            self.assertTrue(all(response.closed for response in responses))
+            self.assertTrue(all(socket.stream.closed for socket in sockets))
+
+    def test_cancellation_propagates_from_request_or_retry_wait(self):
+        for phase in ("request", "wait"):
+            rejected = io.BytesIO(b"PRIVATE_BODY")
+            error = urllib.error.HTTPError(
+                HOST, 429, "PRIVATE_MESSAGE", {"Retry-After": "10"}, rejected
+            )
+
+            def sleep(delay):
+                self.assertTrue(rejected.closed)
+                raise KeyboardInterrupt()
+
+            with self.subTest(phase=phase), patch.object(
+                collector.time, "monotonic", return_value=0
+            ), patch.object(collector.time, "sleep", side_effect=sleep) as sleeping:
+                sonar = collector.Sonar(HOST, "secret")
+                with patch.object(
+                    sonar.opener,
+                    "open",
+                    side_effect=KeyboardInterrupt() if phase == "request" else error,
+                ) as opening, self.assertRaises(KeyboardInterrupt):
+                    sonar.get("ce/task", id="task-1")
+                self.assertEqual(opening.call_count, 1)
+                self.assertEqual(sleeping.call_count, 0 if phase == "request" else 1)
+            rejected.close()
 
     def test_late_response_is_not_accepted_after_polling_budget(self):
         sonar = collector.Sonar(HOST, "secret")

@@ -16,6 +16,9 @@
 """Collect an exact Sonar analysis without coupling unrelated pull requests."""
 
 import base64
+from datetime import timezone
+from email.utils import parsedate_to_datetime
+from http.client import IncompleteRead
 import json
 import os
 from pathlib import Path
@@ -65,6 +68,23 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise ValidationError("Sonar API redirected; credentials were not forwarded")
 
 
+def retry_delay(value):
+    """Honor server delays; malformed or absent hints keep the existing backoff."""
+    if not isinstance(value, str):
+        return 3
+    value = value.strip()
+    if re.fullmatch(r"[0-9]+", value):
+        # Oversized delays become infinity and fail the remaining-budget check.
+        return float(value)
+    try:
+        date = parsedate_to_datetime(value)
+        if date.tzinfo is None:
+            date = date.replace(tzinfo=timezone.utc)
+        return max(0, date.timestamp() - time.time())
+    except (TypeError, ValueError, OverflowError):
+        return 3
+
+
 class Sonar:
     def __init__(self, host, token):
         self.host = service_url(host)
@@ -83,6 +103,7 @@ class Sonar:
         for attempt in range(3):
             remaining = self.deadline - time.monotonic()
             require(remaining > 0, "Sonar result collection timed out")
+            delay = 3
             try:
                 with self.opener.open(request, timeout=min(30, remaining)) as response:
                     body = response.read(8 * 1024 * 1024 + 1)
@@ -96,12 +117,29 @@ class Sonar:
                     )
                     return json.loads(body)
             except urllib.error.HTTPError as error:
-                if error.code not in (408, 429, 502, 503, 504) or attempt == 2:
-                    raise
-            except (urllib.error.URLError, TimeoutError):
+                try:
+                    if error.code not in (408, 429, 502, 503, 504) or attempt == 2:
+                        raise
+                    delay = retry_delay((error.headers or {}).get("Retry-After"))
+                finally:
+                    error.close()
+            except (
+                urllib.error.URLError,
+                TimeoutError,
+                ConnectionError,
+                IncompleteRead,
+            ):
                 if attempt == 2:
                     raise
-            time.sleep(min(3, max(0, self.deadline - time.monotonic())))
+            require(
+                delay < self.deadline - time.monotonic(),
+                "Sonar retry delay does not fit the remaining collection budget",
+            )
+            print(
+                f"Retrying Sonar read ({attempt + 2}/3) after {delay:g}s.",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
         raise ValidationError("Sonar request did not complete")
 
 

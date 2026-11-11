@@ -106,6 +106,8 @@ same workflow run and producing attempt, preserve the JSON file in the artifact,
 and reject digest mismatches. Artifact transfer remains caller-owned.
 The collector has a ten-minute polling budget; the caller's step/job timeout
 provides the hard deadline for network reads and process termination.
+Transient reads use at most three attempts, honoring `Retry-After` seconds or dates.
+A requested delay that cannot fit the remaining budget fails without retrying early.
 The artifact includes the approved `baseRef`. Identity is read only from the
 root `Project scanner properties` context section; module properties cannot
 replace missing root identity fields.
