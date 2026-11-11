@@ -73,7 +73,7 @@ function fixture(t, runners = gpuRunners) {
   const f = {
     now: Date.parse('2026-01-01T00:00:00Z'),
     runs: [], requests: [], events: [], errors: [], logs: [], sleeps: [], unexpected: [],
-    parent: {status: 'in_progress', run_attempt: 1}, source: sourceSha,
+    parent: {id: 7, status: 'in_progress', run_attempt: 1, conclusion: null}, source: sourceSha,
     onDispatch() {},
     onCancel(run) { f.finish(run, 'cancelled'); },
     onSleep() {},
@@ -206,6 +206,162 @@ test('primary success forwards immutable inputs and reports the selected run', {
   assert.ok(summary.includes(`[View worker job logs here](${url}/job/1000)`));
   assert.ok(summary.includes(`[Worker artifacts](${url})`));
 });
+
+for (const entry of ['../index', '../guard/index']) {
+  const caller = entry === '../index' ? 'coordinator' : 'worker guard';
+  for (const status of ['queued', 'requested', 'pending', 'HTTP 404']) {
+    test(`${caller} waits for initial parent ${status}`, {timeout: 5000}, async t => {
+      const f = fixture(t);
+      if (entry === '../guard/index') process.env.GITHUB_RUN_ID = '100';
+      const started = f.now;
+      let parentReads = 0;
+      f.beforeRequest = request => {
+        if (request.route !== '/actions/runs/7' || ++parentReads > 2) return;
+        return status === 'HTTP 404' ? new Response('', {status: 404}) :
+          Response.json({...f.parent, status});
+      };
+      f.onDispatch = run => {
+        assert.equal(parentReads, 3, 'No dispatch before parent confirmation');
+        assert.equal(f.now - started, 10000);
+        f.finish(run, 'success');
+      };
+      assert.equal(await f.run(entry), 0);
+      assert.equal(f.runs.length, entry === '../index' ? 1 : 0);
+      assert.deepEqual(f.sleeps, entry === '../index' ? [5000, 5000, 15000] : [5000, 5000]);
+      assert.match(f.logs.join('\n'), /Parent 7: startup visibility 0s\/120s; expected/);
+      assert.match(f.logs.join('\n'), /"id":7,"run_attempt":1,"status":"in_progress"/);
+      assert.ok(f.logs.some(line => line.includes(status === 'HTTP 404' ? 'HTTP 404' : `"status":"${status}"`)));
+      assert.match(f.logs.join('\n'), /active at the expected attempt after 10s/);
+      assert.equal(f.errors.length, 0);
+    });
+  }
+
+  for (const status of ['queued', 'HTTP 404']) {
+    test(`${caller} bounds persistent initial parent ${status}`, {timeout: 5000}, async t => {
+      const f = fixture(t);
+      if (entry === '../guard/index') process.env.GITHUB_RUN_ID = '100';
+      const started = f.now;
+      f.beforeRequest = request => {
+        if (request.route !== '/actions/runs/7') return;
+        return status === 'HTTP 404' ? new Response('', {status: 404}) :
+          Response.json({...f.parent, status});
+      };
+      assert.equal(await f.run(entry), 1);
+      assert.equal(f.now - started, 120000);
+      assert.equal(f.requests.filter(request => request.route === '/actions/runs/7').length, 25);
+      assert.ok(f.requests.every(request => request.method === 'GET'));
+      assert.equal(f.runs.length, 0);
+      assert.match(f.errors.join('\n'), /startup visibility 120s\/120s; expected/);
+      assert.match(f.errors.join('\n'), /confirmation timed out; no dispatch or workload allowed/);
+      assert.ok(f.errors[0].includes(status === 'HTTP 404' ? 'HTTP 404' : '"status":"queued"'));
+      assert.equal(f.state(), null);
+    });
+  }
+
+  for (const [name, fields] of [
+    ['completed', {status: 'completed', conclusion: 'success'}],
+    ['cancelled', {status: 'completed', conclusion: 'cancelled'}],
+    ['cancelling', {status: 'in_progress', conclusion: 'cancelled'}],
+    ['different run', {id: 8}],
+    ['different attempt', {run_attempt: 2}],
+    ['missing attempt', {run_attempt: undefined}],
+    ['missing run', {id: undefined}],
+    ['missing conclusion', {conclusion: undefined}],
+    ['approval wait', {status: 'waiting'}],
+  ]) {
+    test(`${caller} immediately rejects ${name} parent`, {timeout: 5000}, async t => {
+      const f = fixture(t);
+      if (entry === '../guard/index') process.env.GITHUB_RUN_ID = '100';
+      Object.assign(f.parent, fields);
+      assert.equal(await f.run(entry), 1);
+      assert.deepEqual(f.sleeps, []);
+      assert.equal(f.runs.length, 0);
+      assert.equal(f.requests.filter(request => request.route === '/actions/runs/7').length, 1);
+      assert.match(f.errors.join('\n'), /Parent run is no longer active.*expected .*actual/);
+      for (const [field, value] of Object.entries(fields)) {
+        const observed = field === 'conclusion' && value === undefined ? '<missing>' : value ?? null;
+        assert.ok(f.errors[0].includes(`"${field}":${JSON.stringify(observed)}`));
+      }
+    });
+  }
+
+  test(`${caller} stops if parent is cancelled during startup grace`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    if (entry === '../guard/index') process.env.GITHUB_RUN_ID = '100';
+    f.parent.status = 'queued';
+    f.onSleep = () => { Object.assign(f.parent, {status: 'completed', conclusion: 'cancelled'}); };
+    assert.equal(await f.run(entry), 1);
+    assert.deepEqual(f.sleeps, [5000]);
+    assert.equal(f.runs.length, 0);
+    assert.match(f.errors.join('\n'), /"status":"completed","conclusion":"cancelled"/);
+  });
+
+  test(`${caller} does not treat HTTP 403 as startup visibility`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    if (entry === '../guard/index') process.env.GITHUB_RUN_ID = '100';
+    f.beforeRequest = request => {
+      if (request.route === '/actions/runs/7') return new Response('', {status: 403});
+    };
+    assert.equal(await f.run(entry), 1);
+    assert.deepEqual(f.sleeps, []);
+    assert.equal(f.runs.length, 0);
+    assert.match(f.errors.join('\n'), /HTTP 403 after 1 attempt/);
+  });
+}
+
+for (const status of ['queued', 'requested', 'pending', 'HTTP 404']) {
+  test(`confirmed parent ${status} stops without renewed startup grace`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    f.beforeRequest = request => {
+      if (request.route !== '/actions/runs/7' || !f.runs.length) return;
+      return status === 'HTTP 404' ? new Response('', {status: 404}) :
+        Response.json({...f.parent, status});
+    };
+    assert.equal(await f.run(), 1);
+    assert.deepEqual(f.sleeps, [15000]);
+    assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled']);
+    assert.ok(f.logs.every(line => !line.includes('startup visibility')));
+    assert.equal(f.state(), null);
+  });
+}
+
+test('fallback candidates do not renew parent startup grace', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  f.onCancel = run => {
+    f.finish(run, 'cancelled');
+    f.parent.status = 'queued';
+  };
+  assert.equal(await f.run(), 1);
+  assert.deepEqual(f.events, ['dispatch:100', 'cancel:100', 'completed:100:cancelled']);
+  assert.match(f.errors.join('\n'), /Parent run is no longer active.*"status":"queued"/);
+  assert.ok(f.logs.every(line => !line.includes('startup visibility')));
+  assert.equal(f.state(), null);
+});
+
+for (const delay of ['retry-after', 'late response']) {
+  test(`parent startup deadline includes ${delay}`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    const started = f.now;
+    let delayedReads = 0;
+    f.beforeRequest = request => {
+      if (request.route !== '/actions/runs/7') return;
+      if (f.now - started < 115000) return Response.json({...f.parent, status: 'queued'});
+      delayedReads++;
+      if (delay === 'retry-after') {
+        return new Response('', {status: 429, headers: {'retry-after': '60'}});
+      }
+      f.now += 6000;
+      return Response.json(f.parent);
+    };
+    assert.equal(await f.run(), 1);
+    assert.equal(f.now - started, delay === 'retry-after' ? 115000 : 121000);
+    assert.equal(delayedReads, 1);
+    assert.equal(f.runs.length, 0);
+    assert.match(f.errors.join('\n'), /Parent 7: active check failed.*expected.*last observation/);
+    assert.match(f.errors.join('\n'), /GitHub GET .*\/actions\/runs\/7: request deadline exhausted/);
+    assert.ok(f.sleeps.every(wait => wait === 5000));
+  });
+}
 
 const expectedDefaults = {
   'gpu-amd64': [

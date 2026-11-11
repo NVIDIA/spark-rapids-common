@@ -288,6 +288,13 @@ and policies are unaffected.
   failures caused by unrelated changes to `main`. `pinned-after-start` only exempts
   an allocated worker from later source-ref checks; it does not change approval,
   the startup guard, workflow-definition checks or cleanup.
+- Before its first dispatch, the coordinator allows up to two minutes for the
+  parent's initial queued/requested/pending state or HTTP 404 to become visible as
+  active, polling every five seconds. The worker guard uses the same initial check
+  before allowing workload code. Run ID and attempt must match; terminal or unknown
+  states fail immediately. After confirmation, the coordinator never renews this
+  grace. Requests and API retries share the startup deadline; logs show expected
+  and observed fields. Expiry blocks dispatch or workload execution.
 - A newly dispatched child gets a two-minute startup window for run identity and
   job metadata to become visible. The first check waits fifteen seconds, counted within
   that window; pending metadata is then checked every five seconds. Temporary child/job

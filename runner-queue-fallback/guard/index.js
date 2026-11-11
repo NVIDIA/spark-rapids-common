@@ -25,7 +25,7 @@ async function main() {
       process.env.GITHUB_RUN_ID === id || !request.startsWith(`runner-${id}-${attempt}-`)) {
     throw new Error('Worker must be a fresh coordinator dispatch, not a rerun');
   }
-  await parentActive(api, id, attempt);
+  await parentActive(api, id, attempt, Date.now() + 120000);
   await currentSource(api, input('source-ref'), input('source-sha'));
   console.log('Parent active and approved source unchanged');
 }
