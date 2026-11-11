@@ -150,8 +150,10 @@ async function main() {
   const parentId = process.env.GITHUB_RUN_ID;
   const parentAttempt = process.env.GITHUB_RUN_ATTEMPT;
   const workflowSha = (await api(`/commits/${encodeURIComponent(workflowRef)}`)).sha;
+  let parentConfirmed = false;
   const ensureCurrent = async (sourceMayAdvance = false) => {
-    await parentActive(api, parentId, parentAttempt);
+    await parentActive(api, parentId, parentAttempt, parentConfirmed ? 0 : Date.now() + 120000);
+    parentConfirmed = true;
     if (!sourceMayAdvance) await currentSource(api, sourceRef, sourceSha);
   };
   const report = (active, outcome, queuedAt) => {

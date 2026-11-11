@@ -120,13 +120,59 @@ async function currentSource(api, ref, sha) {
   if (commit.sha !== sha) throw new Error('Source ref changed; obtain approval for the new SHA');
 }
 
-async function parentActive(api, id, attempt) {
+async function parentActive(api, id, attempt, startupDeadline = 0) {
   if (!/^\d+$/.test(String(id)) || !/^\d+$/.test(String(attempt))) {
     throw new Error('Invalid parent run identity');
   }
-  const parent = await api(`/actions/runs/${id}`);
-  if (parent.status !== 'in_progress' || parent.run_attempt !== Number(attempt)) {
-    throw new Error('Parent run is no longer active at the expected attempt');
+  const expected = {id: Number(id), run_attempt: Number(attempt), status: 'in_progress', conclusion: null};
+  const startedAt = Date.now();
+  const budget = Math.max(0, startupDeadline - startedAt);
+  let lastObservation = 'no response';
+  let waited = false;
+  while (true) {
+    let parent;
+    try {
+      parent = await api(`/actions/runs/${id}`, 'GET', undefined, startupDeadline || Infinity);
+    } catch (error) {
+      if (error.status !== 404 && error.code !== 'API_DEADLINE') throw error;
+      if (!startupDeadline || error.code === 'API_DEADLINE') {
+        throw new Error(`Parent ${id}: active check failed ` +
+          `(${Math.round((Date.now() - startedAt) / 1000)}s/${budget / 1000}s); ` +
+          `expected ${JSON.stringify(expected)}; last observation: ${lastObservation}; ${error.message}`,
+          {cause: error});
+      }
+      lastObservation = error.message;
+    }
+    if (parent !== undefined) {
+      const actual = {
+        id: parent?.id ?? null, run_attempt: parent?.run_attempt ?? null,
+        status: parent?.status ?? null,
+        conclusion: parent?.conclusion === undefined ? '<missing>' : parent.conclusion,
+      };
+      lastObservation = JSON.stringify(actual);
+      const sameIdentity = actual.id === expected.id && actual.run_attempt === expected.run_attempt;
+      if (sameIdentity && actual.status === 'in_progress' && actual.conclusion === null) {
+        if (waited) {
+          console.log(`Parent ${id}: active at the expected attempt after ` +
+            `${Math.round((Date.now() - startedAt) / 1000)}s; actual ${lastObservation}`);
+        }
+        return;
+      }
+      // Grace applies only before confirmation, never to identity drift or a terminal result.
+      if (!startupDeadline || !sameIdentity || actual.conclusion !== null ||
+          !['queued', 'requested', 'pending'].includes(actual.status)) {
+        throw new Error('Parent run is no longer active at the expected attempt; ' +
+          `expected ${JSON.stringify(expected)}; actual ${lastObservation}`);
+      }
+    }
+    const remaining = startupDeadline - Date.now();
+    const progress = `Parent ${id}: startup visibility ` +
+      `${Math.round((Date.now() - startedAt) / 1000)}s/${budget / 1000}s; ` +
+      `expected ${JSON.stringify(expected)}; last observation: ${lastObservation}`;
+    if (remaining <= 0) throw new Error(`${progress}; confirmation timed out; no dispatch or workload allowed`);
+    console.log(`${progress}; next poll in ${Math.min(5000, remaining) / 1000}s`);
+    waited = true;
+    await sleep(Math.min(5000, remaining));
   }
 }
 
