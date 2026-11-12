@@ -9,6 +9,8 @@ or fetch rules at run time. It never executes source scripts, build tools or plu
 The scanner container has no network access or credentials. Its source mount and
 root filesystem are read-only, with bounded resources and temporary storage.
 Only the scan's own container is cleaned up after completion or failure.
+The summary shows the result and only patterns actually detected. A passing scan
+does not list hypothetical threats or the scanner's internal compatibility contract.
 
 ## Blocking policy
 

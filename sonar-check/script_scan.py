@@ -542,14 +542,21 @@ def evaluate(report, manifest):
 
 def summary(result):
     findings = result["findings"]
-    report = f"Script security: {'FAIL' if findings else 'PASS'}. Blocking findings: {len(findings)}."
+    report = f"Script security: {'FAIL' if findings else 'PASS'}. Blocking source patterns: {len(findings)}."
     rows = [
         report,
-        f"Scanner: Malcontent, contract {SCANNER_CONTRACT}. Policy: Critical, download/direct-shell pipes, AWS credential access with upload.",
         f"Root-repository files: {result['file_count']}; verified empty files: {result['empty_files']}.",
     ]
     if findings:
-        rows.extend(["", "| File | Rule | Severity |", "| --- | --- | --- |"])
+        rows.extend(
+            [
+                "",
+                "Static source inspection does not establish that code executed or data was exposed.",
+                "",
+                "| File | Matched source pattern | Severity |",
+                "| --- | --- | --- |",
+            ]
+        )
     for finding in findings[:20]:
         path = "".join(
             (

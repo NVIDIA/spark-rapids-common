@@ -987,12 +987,49 @@ class EntrypointTests(GitFixture):
 
     def test_success_outputs_are_bound_to_the_verified_commit(self):
         with patch.object(scanner, "run", return_value=result(self.sha)) as run:
-            code, _ = self.main(INPUT_EXPECTED_SHA=self.sha.upper())
+            code, stdout = self.main(INPUT_EXPECTED_SHA=self.sha.upper())
         self.assertEqual(code, 0)
         self.assertEqual(run.call_args.args[3], TEST_IMAGE)
         self.assertIn(f"sha={self.sha}\n", self.output.read_text())
         self.assertIn("passed=true\n", self.output.read_text())
         self.assertIn("PASS", self.summary.read_text())
+        self.assertNotRegex(
+            stdout + self.summary.read_text(),
+            r"(?i)aws|credential|upload|policy|contract|critical|download",
+        )
+
+    def test_clean_summary_reports_only_result_and_file_counts(self):
+        outcome = result(self.sha)
+        outcome.update(file_count=3, empty_files=1)
+        self.assertEqual(
+            scanner.summary(outcome),
+            "Script security: PASS. Blocking source patterns: 0.\n"
+            "Root-repository files: 3; verified empty files: 1.",
+        )
+
+    def test_failed_summary_lists_only_matched_source_patterns(self):
+        patterns = {
+            "critical-file-risk": "CRITICAL",
+            "download-with-direct-shell-pipe": "MEDIUM",
+            "credential-access-with-upload": "MEDIUM",
+        }
+        for matched, severity in patterns.items():
+            with self.subTest(pattern=matched):
+                findings = [
+                    {"path": "ci/build.sh", "rule": matched, "severity": severity}
+                ]
+                text = scanner.summary(result(self.sha, findings))
+                self.assertIn("Script security: FAIL. Blocking source patterns: 1.", text)
+                self.assertIn(f"| <code>ci/build.sh</code> | {matched} | {severity} |", text)
+                self.assertIn(
+                    "Static source inspection does not establish that code executed or data was exposed.",
+                    text,
+                )
+                for unmatched in patterns.keys() - {matched}:
+                    self.assertNotIn(unmatched, text)
+                self.assertNotRegex(text, r"(?i)policy|contract|leak")
+                if matched != "credential-access-with-upload":
+                    self.assertNotRegex(text, r"(?i)aws|credential|upload")
 
     def test_public_action_rejects_local_image_ids_before_scanning(self):
         with patch.object(scanner, "run") as run:
@@ -1045,10 +1082,18 @@ class EntrypointTests(GitFixture):
             }
             for _ in range(25)
         ]
-        text = scanner.summary(result(self.sha, findings))
+        outcome = result(self.sha, findings)
+        outcome["submodules"] = [
+            {"path": f"vendor-{index}[link]<tag>", "sha": self.sha}
+            for index in range(25)
+        ]
+        text = scanner.summary(outcome)
         self.assertEqual(text.count("unsafe-execution"), 20)
         self.assertNotIn("[link]", text)
         self.assertNotIn("<tag>", text)
+        self.assertIn("External submodule contents were not scanned:", text)
+        self.assertIn("Showing the first 20 of 25 submodules.", text)
+        self.assertNotIn("vendor-20", text)
 
 
 @unittest.skipUnless(
