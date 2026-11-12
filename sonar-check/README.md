@@ -10,7 +10,7 @@ this change.
 - `sonar-check/collect` runs beside the scanner with Python 3 and Sonar access.
   It verifies the CE task's project, PR, target branch and scanner revision, then
   retrieves the quality gate and High/Blocker counts by **analysis ID**.
-- `sonar-check/report` runs with a GitHub token, upserts a summary comment and
+- `sonar-check/report` runs with a GitHub token, upserts a verified analysis summary and
   sets a **Sonar check / PR #N / scope** commit status. It needs no Sonar credential
   or network access to Sonar. Node 24 is supplied by its pinned GitHub Script action.
 
@@ -21,10 +21,13 @@ The status and summary name the verified failure, for example
 `Sonar failed: 2 High, 0 Blocker issues.` or `Sonar failed: scan was cancelled.`
 Issue counts describe new issues in the exact analysis and include both severities.
 Reporting failures identify the operation whose completion could not be confirmed.
-If Sonar rejects an older concurrent analysis, the summary says that a newer
-analysis finished first and asks the caller to serialize scans before rerunning.
-Failed or cancelled server tasks never display unverified issue counts or raw
-server error text.
+Infrastructure and process failures publish a failed check with the reason and
+retry guidance, without posting a PR comment. This includes failed/cancelled
+server tasks, missing or invalid evidence, and changed targets. If Sonar rejects
+an older concurrent analysis, the check asks the caller to serialize scans before
+rerunning. Raw server error text and unverified issue counts are never published.
+Completed analyses still receive a summary, including passes and verified
+High/Blocker or quality-gate failures.
 
 Issue APIs return mutable current PR data, not historical analysis snapshots.
 When available, the summary labels these observations with their collection time

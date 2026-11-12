@@ -316,6 +316,12 @@ function link(value) {
 }
 
 function analysisFailure(evidence, scanResult, failure) {
+  if (scanResult === 'cancelled') {
+    return 'scan was cancelled';
+  }
+  if (scanResult === 'skipped') {
+    return 'scan was skipped';
+  }
   if (evidence) {
     if (evidence.high > 0 || evidence.blocker > 0) {
       return `${evidence.high} High, ${evidence.blocker} Blocker issues`;
@@ -324,19 +330,11 @@ function analysisFailure(evidence, scanResult, failure) {
       return `quality gate did not pass (${evidence.gateStatus})`;
     }
   }
-  const scanFailures = {
-    failure: 'scan job failed',
-    cancelled: 'scan was cancelled',
-    skipped: 'scan was skipped',
-  };
-  if (scanResult === 'cancelled' || scanResult === 'skipped') {
-    return scanFailures[scanResult];
-  }
   if (failure) {
     return failure.reason;
   }
-  if (scanFailures[scanResult]) {
-    return scanFailures[scanResult];
+  if (scanResult === 'failure') {
+    return 'scan job failed';
   }
   if (!evidence) {
     return 'analysis result could not be verified';
@@ -344,7 +342,33 @@ function analysisFailure(evidence, scanResult, failure) {
   return evidence.passed ? '' : 'analysis was not marked as passed';
 }
 
-function summary(target, options, evidence, passed, stale, retargeted, marker, reason, failure) {
+function failureMessage(reason, failure) {
+  const message = `Sonar failed: ${reason}.`;
+  if (failure && reason === failure.reason) {
+    return `${message} ${failure.nextStep}`;
+  }
+  switch (reason) {
+    case 'scan job failed':
+    case 'analysis was not marked as passed':
+      return `${message} Inspect the scan logs, then rerun.`;
+    case 'scan was cancelled':
+      return `${message} Rerun the workflow when ready.`;
+    case 'scan was skipped':
+      return `${message} Check scan prerequisites, then rerun.`;
+    case 'analysis result could not be verified':
+      return `${message} Inspect scan and artifact steps, then rerun.`;
+    case 'invalid reporting configuration':
+      return `${message} Fix reporter inputs, then rerun.`;
+    case 'pull request could not be verified':
+      return `${message} Check PR access, then retry reporting.`;
+    case 'summary publication was not confirmed':
+      return `${message} Check the PR comment, then retry reporting.`;
+    default:
+      return message;
+  }
+}
+
+function summary(target, options, evidence, passed, stale, marker, reason) {
   const run = `${target.server}/${target.repository}/actions/runs/${target.runId}`;
   const scanUrl = `${run}/attempts/${options.sourceAttempt}`;
   const reportUrl = `${run}/attempts/${target.runAttempt}`;
@@ -355,18 +379,12 @@ function summary(target, options, evidence, passed, stale, retargeted, marker, r
     '',
     `**Sonar check: ${passed ? 'PASS' : 'FAIL — ' + reason + '.'}**`,
     '',
-    `${evidence ? 'Analyzed' : 'Expected'} commit: [\`${target.sha.slice(0, 12)}\`](${commitUrl}). ` +
+    `Analyzed commit: [\`${target.sha.slice(0, 12)}\`](${commitUrl}). ` +
       `This result applies only to that commit.${stale ? ' The PR head has since changed.' : ''}`,
     '',
-    `Target branch: **${escape(options.baseRef)}**.` +
-      (retargeted
-        ? ' The PR target branch has since changed; rerun the scan for the current target.'
-        : ''),
+    `Target branch: **${escape(options.baseRef)}**.`,
     '',
   ];
-  if (failure && reason === failure.reason) {
-    lines.push(failure.nextStep, '', `Sonar task: \`${failure.taskId}\`.`, '');
-  }
   if (evidence) {
     lines.push(
       `Exact analysis quality gate: **${evidence.gateStatus}**. New High: **${evidence.high}**; ` +
@@ -536,7 +554,9 @@ async function report({ github, core, context, options }) {
   try {
     target = identity(context, options);
   } catch {
-    core.setFailed('Invalid Sonar reporter identity; no publication target is safe.');
+    core.setFailed(
+      'Invalid Sonar reporter identity; no publication target is safe. Fix reporter inputs, then rerun.',
+    );
     return {
       passed: false,
       published: false,
@@ -547,7 +567,9 @@ async function report({ github, core, context, options }) {
   try {
     scope = publicationScope(options, target);
   } catch {
-    core.setFailed('Invalid Sonar reporting scope; no publication target is safe.');
+    core.setFailed(
+      'Invalid Sonar reporting scope; no publication target is safe. Fix reporter inputs, then rerun.',
+    );
     return { passed: false, published: false, statusPublished: false };
   }
   if (options.phase === 'pending') {
@@ -598,7 +620,14 @@ async function report({ github, core, context, options }) {
       options.scanResult === 'success',
   );
   let published = false;
-  if (validOptions) {
+  // Comments describe completed analyses. Operational failures belong only in
+  // the failed check, and must not require comment-list or author API access.
+  const commentEligible = Boolean(
+    evidence &&
+      ['success', 'failure'].includes(options.scanResult) &&
+      (passed || evidence.high > 0 || evidence.blocker > 0 || evidence.gateStatus !== 'OK'),
+  );
+  if (commentEligible) {
     let prVerified = false;
     try {
       const { data: pr } = await github.rest.pulls.get({
@@ -620,21 +649,20 @@ async function report({ github, core, context, options }) {
       passed = passed && !retargeted;
       if (retargeted) {
         reason = 'target branch changed; rerun scan';
+      } else {
+        const marker = `<!-- sonar-check:${target.repository}:${target.pr}:${target.runId}:${options.sourceAttempt}:${scope.scopeId} -->`;
+        const body = summary(
+          target,
+          options,
+          evidence,
+          passed,
+          pr.head.sha.toLowerCase() !== target.sha,
+          marker,
+          reason,
+        );
+        await publishComment(github, target, body, marker, options.actionsToken === true);
+        published = true;
       }
-      const marker = `<!-- sonar-check:${target.repository}:${target.pr}:${target.runId}:${options.sourceAttempt}:${scope.scopeId} -->`;
-      const body = summary(
-        target,
-        options,
-        evidence,
-        passed,
-        pr.head.sha.toLowerCase() !== target.sha,
-        retargeted,
-        marker,
-        reason,
-        failure,
-      );
-      await publishComment(github, target, body, marker, options.actionsToken === true);
-      published = true;
     } catch {
       reason = prVerified
         ? 'summary publication was not confirmed'
@@ -646,6 +674,9 @@ async function report({ github, core, context, options }) {
   }
   // A failed or ambiguous comment write must never leave a successful status.
   passed = passed && published;
+  const description = passed
+    ? 'Sonar passed: 0 High, 0 Blocker issues.'
+    : failureMessage(reason, failure);
   let statusPublished = false;
   try {
     await github.rest.repos.createCommitStatus({
@@ -654,9 +685,7 @@ async function report({ github, core, context, options }) {
       sha: target.sha,
       context: scope.statusContext,
       state: passed ? 'success' : 'failure',
-      description: passed
-        ? 'Sonar passed: 0 High, 0 Blocker issues.'
-        : `Sonar failed: ${reason}.`,
+      description,
       target_url: `${target.server}/${target.repository}/actions/runs/${target.runId}/attempts/${target.runAttempt}`,
       request,
     });
@@ -666,7 +695,10 @@ async function report({ github, core, context, options }) {
   }
   if (!passed || !statusPublished) {
     core.setFailed(
-      `Sonar failed: ${statusPublished ? reason : 'status publication was not confirmed'}.`,
+      statusPublished
+        ? description
+        : `${passed ? '' : description + ' '}Sonar status publication was not confirmed; ` +
+          'inspect reporting logs before retrying.',
     );
   }
   return {

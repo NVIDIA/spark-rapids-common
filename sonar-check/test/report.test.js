@@ -26,6 +26,8 @@ const repository = 'test-org/project';
 const sonarUrl = 'https://sonar.example.test';
 const statusContext = 'Sonar check / PR #7 / 6f08ff44f51824640bc11b410f5a72fb';
 const marker = '<!-- sonar-check:test-org/project:7:123:1:6f08ff44f51824640bc11b410f5a72fb -->';
+const unverifiedDescription =
+  'Sonar failed: analysis result could not be verified. Inspect scan and artifact steps, then rerun.';
 const bot = {
   id: 41898282,
   type: 'Bot',
@@ -203,6 +205,13 @@ function scopedFixture(t, changes = {}) {
     },
   });
   return f;
+}
+
+function assertNoCommentCalls(f) {
+  assert.deepEqual(
+    f.calls.filter(call => ['user', 'list', 'create', 'update'].includes(call.name)),
+    [],
+  );
 }
 
 test('maps inputs without accepting repository or run overrides', () => {
@@ -482,7 +491,8 @@ for (const [name, change] of Object.entries({
     assert.equal((await f.run()).passed, false);
     assert.equal(f.statuses()[0].state, 'failure');
     assert.equal(f.failures.length, 1);
-    assert.match(f.comments[0].body, /analysis result could not be verified/);
+    assert.equal(f.statuses()[0].description, unverifiedDescription);
+    assertNoCommentCalls(f);
   });
 }
 
@@ -610,6 +620,7 @@ for (const mode of ['missing', 'malformed', 'oversized', 'directory', 'symlink']
     }
     assert.equal((await f.run()).passed, false);
     assert.equal(f.statuses()[0].state, 'failure');
+    assertNoCommentCalls(f);
     assert.doesNotMatch([...f.warnings, ...f.failures].join('\n'), /TOKEN-IN-BAD-JSON/);
   });
 }
@@ -622,7 +633,6 @@ for (const [change, reason] of [
   [{ high: 2 }, '2 High, 0 Blocker issues'],
   [{ blocker: 1 }, '0 High, 1 Blocker issues'],
   [{ high: 2, blocker: 1 }, '2 High, 1 Blocker issues'],
-  [{ passed: false }, 'analysis was not marked as passed'],
 ]) {
   test(`valid failing gate evidence ${JSON.stringify(change)} remains a failure`, async t => {
     const f = fixture(t, result(change));
@@ -642,8 +652,40 @@ for (const scanResult of ['failure', 'cancelled', 'skipped']) {
     f.options.scanResult = scanResult;
     assert.equal((await f.run()).passed, false);
     assert.equal(f.statuses()[0].state, 'failure');
+    assertNoCommentCalls(f);
+    assert.match(f.failures[0], /rerun/i);
   });
 }
+
+test('zero-count OK analysis marked not passed is a process failure without a comment', async t => {
+  const f = fixture(t, result({ passed: false }));
+  assert.deepEqual(await f.run(), { passed: false, published: false, statusPublished: true });
+  assert.equal(
+    f.statuses()[0].description,
+    'Sonar failed: analysis was not marked as passed. Inspect the scan logs, then rerun.',
+  );
+  assert.deepEqual(f.calls.map(call => call.name), ['status']);
+});
+
+for (const scanResult of ['cancelled', 'skipped']) {
+  for (const finding of [{ high: 1 }, { blocker: 1 }, { gateStatus: 'ERROR' }]) {
+    test(`${scanResult} process suppresses even verified ${JSON.stringify(finding)} comments`, async t => {
+      const f = fixture(t, result(finding));
+      f.options.scanResult = scanResult;
+      assert.deepEqual(await f.run(), { passed: false, published: false, statusPublished: true });
+      assert.ok(f.statuses()[0].description.startsWith(`Sonar failed: scan was ${scanResult}.`));
+      assertNoCommentCalls(f);
+    });
+  }
+}
+
+test('a verified quality-gate failure still posts findings when the scanner job fails', async t => {
+  const f = fixture(t, result({ passed: false, gateStatus: 'ERROR' }));
+  f.options.scanResult = 'failure';
+  assert.deepEqual(await f.run(), { passed: false, published: true, statusPublished: true });
+  assert.equal(f.statuses()[0].description, 'Sonar failed: quality gate did not pass (ERROR).');
+  assert.equal(f.comments.length, 1);
+});
 
 test('verified High findings explain a failed scanner without listing unrelated causes', async t => {
   const f = fixture(t, result({ passed: false, gateStatus: 'ERROR', high: 1 }));
@@ -664,9 +706,11 @@ for (const [scanResult, reason] of [
     const f = fixture(t, result({ complete: false, high: 99, error: 'SECRET-RAW-ERROR' }));
     f.options.scanResult = scanResult;
     assert.equal((await f.run()).passed, false);
-    assert.equal(f.statuses()[0].description, `Sonar failed: ${reason}.`);
-    assert.ok(f.comments[0].body.includes(`FAIL — ${reason}.`));
-    assert.doesNotMatch(f.comments[0].body, /99|SECRET-RAW-ERROR/);
+    assert.ok(f.statuses()[0].description.startsWith(`Sonar failed: ${reason}.`));
+    assert.equal(f.failures[0], f.statuses()[0].description);
+    assert.match(f.failures[0], /rerun/i);
+    assertNoCommentCalls(f);
+    assert.doesNotMatch(JSON.stringify(f.statuses()), /99|SECRET-RAW-ERROR/);
   });
 }
 
@@ -699,15 +743,14 @@ for (const [code, reason, nextStep] of [
     'Review the Sonar task cancellation, then rerun.',
   ],
 ]) {
-  test(`verified incomplete ${code} reports only safe failure details`, async t => {
+  test(`verified incomplete ${code} fails only the check with safe retry guidance`, async t => {
     const f = fixture(t, failedAnalysis(code));
-    assert.equal((await f.run()).passed, false);
-    assert.equal(f.statuses()[0].description, `Sonar failed: ${reason}.`);
-    assert.match(f.comments[0].body, /Expected commit:/);
-    assert.ok(f.comments[0].body.includes(nextStep));
-    assert.match(f.comments[0].body, /Sonar task: `task-id`/);
-    assert.doesNotMatch(f.comments[0].body, /Analyzed commit|quality gate:|New High:|99|SECRET-RAW-ERROR/);
-    assert.equal(f.writes().length, 2);
+    assert.deepEqual(await f.run(), { passed: false, published: false, statusPublished: true });
+    assert.equal(f.statuses()[0].description, `Sonar failed: ${reason}. ${nextStep}`);
+    assert.equal(f.failures[0], f.statuses()[0].description);
+    assert.deepEqual(f.calls.map(call => call.name), ['status']);
+    assertNoCommentCalls(f);
+    assert.doesNotMatch(JSON.stringify([...f.statuses(), ...f.failures]), /99|SECRET-RAW-ERROR/);
   });
 
   test(`complete successful evidence ignores ${code}`, async t => {
@@ -735,10 +778,11 @@ for (const [field, value] of Object.entries({
     test(`incomplete failure code rejects ${field}=${candidate}`, async t => {
       const f = fixture(t, failedAnalysis('analysis-out-of-order', { [field]: candidate }));
       assert.equal((await f.run()).passed, false);
-      assert.equal(f.statuses()[0].description, 'Sonar failed: analysis result could not be verified.');
+      assert.equal(f.statuses()[0].description, unverifiedDescription);
       assert.equal(f.statuses()[0].sha, sha);
+      assertNoCommentCalls(f);
       assert.doesNotMatch(
-        f.comments[0].body,
+        JSON.stringify([...f.statuses(), ...f.failures]),
         /newer analysis|Serialize scans|Sonar task:|99|SECRET-RAW-ERROR/,
       );
     });
@@ -749,8 +793,9 @@ for (const code of ['unknown', '__proto__', 'constructor', 'toString', null, {},
   test(`unrecognized failure code ${JSON.stringify(code)} retains the generic failure`, async t => {
     const f = fixture(t, failedAnalysis(code));
     assert.equal((await f.run()).passed, false);
-    assert.equal(f.statuses()[0].description, 'Sonar failed: analysis result could not be verified.');
-    assert.doesNotMatch(f.comments[0].body, /newer analysis|Serialize scans|Sonar task:|99|SECRET-RAW-ERROR/);
+    assert.equal(f.statuses()[0].description, unverifiedDescription);
+    assertNoCommentCalls(f);
+    assert.doesNotMatch(JSON.stringify(f.statuses()), /newer analysis|Serialize scans|99|SECRET-RAW-ERROR/);
   });
 }
 
@@ -762,8 +807,9 @@ for (const [scanResult, reason] of [
     const f = fixture(t, failedAnalysis());
     f.options.scanResult = scanResult;
     assert.equal((await f.run()).passed, false);
-    assert.equal(f.statuses()[0].description, `Sonar failed: ${reason}.`);
-    assert.doesNotMatch(f.comments[0].body, /newer analysis|Serialize scans|Sonar task:/);
+    assert.ok(f.statuses()[0].description.startsWith(`Sonar failed: ${reason}.`));
+    assertNoCommentCalls(f);
+    assert.doesNotMatch(JSON.stringify(f.statuses()), /newer analysis|Serialize scans|Sonar task:/);
   });
 }
 
@@ -771,7 +817,38 @@ test('verified server reason explains a failed scan job', async t => {
   const f = fixture(t, failedAnalysis());
   f.options.scanResult = 'failure';
   assert.equal((await f.run()).passed, false);
-  assert.equal(f.statuses()[0].description, 'Sonar failed: a newer analysis finished first.');
+  assert.equal(
+    f.statuses()[0].description,
+    'Sonar failed: a newer analysis finished first. Serialize scans for this PR, then rerun.',
+  );
+  assertNoCommentCalls(f);
+});
+
+test('process failure leaves an existing summary untouched without comment API access', async t => {
+  const f = fixture(t, failedAnalysis());
+  f.comments.push({ id: 1, user: bot, body: marker + '\nprevious complete analysis' });
+  f.handlers.user = () => {
+    throw new Error('Comment access unavailable');
+  };
+  assert.deepEqual(await f.run(), { passed: false, published: false, statusPublished: true });
+  assertNoCommentCalls(f);
+  assert.deepEqual(f.calls.map(call => call.name), ['status']);
+  assert.equal(f.comments[0].body, marker + '\nprevious complete analysis');
+  assert.doesNotMatch(f.failures[0], /summary publication/);
+});
+
+test('unconfirmed status publication retains the operational cause and retry guidance', async t => {
+  const f = fixture(t, failedAnalysis());
+  f.handlers.status = () => {
+    throw new Error('PRIVATE-RESPONSE');
+  };
+  assert.deepEqual(await f.run(), { passed: false, published: false, statusPublished: false });
+  assertNoCommentCalls(f);
+  assert.match(f.failures[0], /newer analysis finished first/);
+  assert.match(f.failures[0], /Serialize scans for this PR, then rerun/);
+  assert.match(f.failures[0], /status publication was not confirmed/);
+  assert.doesNotMatch(JSON.stringify([...f.failures, ...f.warnings]), /PRIVATE-RESPONSE/);
+  assert.equal(f.statuses().length, 1);
 });
 
 test('verified complete High findings ignore failure codes', async t => {
@@ -810,6 +887,7 @@ test('retargeting takes precedence over verified findings', async t => {
   });
   assert.equal((await f.run()).passed, false);
   assert.equal(f.statuses()[0].description, 'Sonar failed: target branch changed; rerun scan.');
+  assertNoCommentCalls(f);
 });
 
 test('unconfirmed summary publication takes precedence over analysis findings', async t => {
@@ -818,7 +896,10 @@ test('unconfirmed summary publication takes precedence over analysis findings', 
     throw new Error('SECRET-RAW-ERROR');
   };
   assert.equal((await f.run()).passed, false);
-  assert.equal(f.statuses()[0].description, 'Sonar failed: summary publication was not confirmed.');
+  assert.equal(
+    f.statuses()[0].description,
+    'Sonar failed: summary publication was not confirmed. Check the PR comment, then retry reporting.',
+  );
   assert.equal(f.calls.filter(call => call.name === 'create').length, 1);
 });
 
@@ -866,7 +947,7 @@ test('stale PR head is annotated and status remains on analyzed SHA', async t =>
   assert.doesNotMatch(f.comments[0].body, new RegExp('b'.repeat(40)));
 });
 
-test('retargeted PR fails and explains the changed baseline even on the same SHA', async t => {
+test('retargeted PR fails without a summary even on the same SHA', async t => {
   const f = fixture(t);
   f.handlers.pull = () => ({
     data: {
@@ -877,14 +958,11 @@ test('retargeted PR fails and explains the changed baseline even on the same SHA
   });
   assert.deepEqual(await f.run(), {
     passed: false,
-    published: true,
+    published: false,
     statusPublished: true,
   });
-  assert.match(f.comments[0].body, /Sonar check: FAIL/);
-  assert.match(f.comments[0].body, /Target branch: \*\*release\/26\.12\*\*/);
-  assert.match(f.comments[0].body, /PR target branch has since changed/);
+  assertNoCommentCalls(f);
   assert.equal(f.statuses()[0].description, 'Sonar failed: target branch changed; rerun scan.');
-  assert.doesNotMatch(f.comments[0].body, /PR head has since changed/);
   assert.equal(f.statuses()[0].sha, sha);
   assert.equal(f.statuses()[0].state, 'failure');
   assert.equal(f.failures.length, 1);
@@ -1059,9 +1137,13 @@ for (const failing of ['pull', 'user', 'list', 'create', 'update', 'status']) {
       : failing === 'status'
         ? 'status publication was not confirmed'
         : 'summary publication was not confirmed';
-    assert.equal(f.failures[0], `Sonar failed: ${reason}.`);
+    assert.ok(f.failures[0].includes(reason));
+    assert.match(f.failures[0], /retry/i);
     if (failing !== 'status') {
-      assert.equal(f.statuses()[0].description, `Sonar failed: ${reason}.`);
+      assert.equal(f.statuses()[0].description, f.failures[0]);
+    }
+    if (failing === 'pull') {
+      assertNoCommentCalls(f);
     }
     assert.doesNotMatch([...f.warnings, ...f.failures].join('\n'), /AUTHORIZATION|raw response/);
   });
@@ -1099,7 +1181,7 @@ for (const reportUrl of [
     const f = fixture(t, result({ reportUrl }));
     assert.equal((await f.run()).passed, false);
     assert.equal(f.statuses()[0].state, 'failure');
-    assert.doesNotMatch(f.comments[0].body, /Full Sonar report/);
+    assertNoCommentCalls(f);
   });
 }
 
@@ -1203,7 +1285,11 @@ for (const change of [
     );
     assert.equal(f.statuses()[0].context, statusContext);
     assert.equal(f.statuses()[0].state, 'failure');
-    assert.equal(f.statuses()[0].description, 'Sonar failed: invalid reporting configuration.');
+    assert.equal(
+      f.statuses()[0].description,
+      'Sonar failed: invalid reporting configuration. Fix reporter inputs, then rerun.',
+    );
+    assertNoCommentCalls(f);
   });
 }
 
