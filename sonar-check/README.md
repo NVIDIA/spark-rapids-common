@@ -10,7 +10,7 @@ this change.
 - `sonar-check/collect` runs beside the scanner with Python 3 and Sonar access.
   It verifies the CE task's project, PR, target branch and scanner revision, then
   retrieves the quality gate and High/Blocker counts by **analysis ID**.
-- `sonar-check/report` runs with a GitHub token, upserts a verified analysis summary and
+- `sonar-check/report` runs with a GitHub token, comments on reportable findings and
   sets a **Sonar check / PR #N / scope** commit status. It needs no Sonar credential
   or network access to Sonar. Node 24 is supplied by its pinned GitHub Script action.
 
@@ -26,8 +26,11 @@ retry guidance, without posting a PR comment. This includes failed/cancelled
 server tasks, missing or invalid evidence, and changed targets. If Sonar rejects
 an older concurrent analysis, the check asks the caller to serialize scans before
 rerunning. Raw server error text and unverified issue counts are never published.
-Completed analyses still receive a summary, including passes and verified
-High/Blocker or quality-gate failures.
+Clean passes publish only the successful check. Passing analyses with available
+advisory findings receive a summary explaining why those findings do not block
+the check. Verified High/Blocker or quality-gate failures also receive summaries.
+Unavailable advisory details do not create a comment or invalidate an otherwise
+verified passing analysis.
 
 Issue APIs return mutable current PR data, not historical analysis snapshots.
 When available, the summary labels these observations with their collection time
@@ -149,7 +152,7 @@ It uses the current workflow token by default
 Custom GitHub App tokens are not supported without a verified comment identity.
 It publishes only to the approved SHA, annotates an advanced PR, and fails if the
 current PR target branch differs from the approved target, even when its SHA is
-unchanged. It also fails when either the summary or status cannot be published.
+unchanged. It also fails when a required findings summary or status cannot be published.
 A rerun updates only a comment owned by that token's identity. It never retries an
 ambiguous write automatically.
 

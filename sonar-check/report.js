@@ -620,14 +620,18 @@ async function report({ github, core, context, options }) {
       options.scanResult === 'success',
   );
   let published = false;
-  // Comments describe completed analyses. Operational failures belong only in
-  // the failed check, and must not require comment-list or author API access.
+  // Comments describe findings from completed analyses. Clean passes and passes
+  // without usable advisory details need only a status; operational failures
+  // must not require comment-list or author API access.
   const commentEligible = Boolean(
     evidence &&
       ['success', 'failure'].includes(options.scanResult) &&
-      (passed || evidence.high > 0 || evidence.blocker > 0 || evidence.gateStatus !== 'OK'),
+      ((passed && evidence.detailsComplete && evidence.totalIssues > 0) ||
+        evidence.high > 0 ||
+        evidence.blocker > 0 ||
+        evidence.gateStatus !== 'OK'),
   );
-  if (commentEligible) {
+  if (passed || commentEligible) {
     let prVerified = false;
     try {
       const { data: pr } = await github.rest.pulls.get({
@@ -649,7 +653,7 @@ async function report({ github, core, context, options }) {
       passed = passed && !retargeted;
       if (retargeted) {
         reason = 'target branch changed; rerun scan';
-      } else {
+      } else if (commentEligible) {
         const marker = `<!-- sonar-check:${target.repository}:${target.pr}:${target.runId}:${options.sourceAttempt}:${scope.scopeId} -->`;
         const body = summary(
           target,
@@ -664,6 +668,7 @@ async function report({ github, core, context, options }) {
         published = true;
       }
     } catch {
+      passed = false;
       reason = prVerified
         ? 'summary publication was not confirmed'
         : 'pull request could not be verified';
@@ -672,8 +677,9 @@ async function report({ github, core, context, options }) {
       );
     }
   }
-  // A failed or ambiguous comment write must never leave a successful status.
-  passed = passed && published;
+  // Required comment writes must succeed; intentional suppression still permits
+  // a passing status after PR verification.
+  passed = passed && (!commentEligible || published);
   const description = passed
     ? 'Sonar passed: 0 High, 0 Blocker issues.'
     : failureMessage(reason, failure);

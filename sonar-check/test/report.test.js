@@ -177,7 +177,7 @@ function fixture(t, evidence = result()) {
   return f;
 }
 
-function scopedFixture(t, changes = {}) {
+function scopedFixture(t, changes = {}, evidence = {}) {
   const options = {
     prNumber: '7',
     baseRef,
@@ -190,6 +190,7 @@ function scopedFixture(t, changes = {}) {
   const f = fixture(
     t,
     result({
+      ...evidence,
       pr: Number(options.prNumber),
       baseRef: options.baseRef,
       project: options.project,
@@ -249,26 +250,68 @@ test('defaults the adapter phase to final reporting', () => {
   assert.equal(optionsFromEnv({}).phase, 'report');
 });
 
-test('publishes one successful summary and exact scoped commit status', async t => {
+test('clean pass publishes only the exact scoped commit status after PR verification', async t => {
   const f = fixture(t);
   assert.deepEqual(await f.run(), {
     passed: true,
-    published: true,
+    published: false,
     statusPublished: true,
   });
   assert.equal(f.failures.length, 0);
-  assert.deepEqual(
-    f.writes().map(call => call.name),
-    ['create', 'status'],
-  );
-  assert.ok(f.comments[0].body.startsWith(marker + '\n'));
-  assert.match(f.comments[0].body, /No current PR findings/);
+  assert.deepEqual(f.calls.map(call => call.name), ['pull', 'status']);
+  assertNoCommentCalls(f);
+  assert.equal(f.comments.length, 0);
   assert.equal(f.statuses()[0].context, statusContext);
   assert.equal(f.statuses()[0].state, 'success');
   assert.equal(f.statuses()[0].description, 'Sonar passed: 0 High, 0 Blocker issues.');
   assert.equal(f.statuses()[0].sha, sha);
   assert.equal(f.statuses()[0].owner, 'test-org');
   assert.equal(f.statuses()[0].repo, 'project');
+});
+
+test('clean pass preserves an existing summary without requiring comment access', async t => {
+  const f = fixture(t);
+  f.comments.push({ id: 1, user: bot, body: marker + '\nprevious findings' });
+  f.handlers.user = () => {
+    throw new Error('Comment access unavailable');
+  };
+  assert.deepEqual(await f.run(), { passed: true, published: false, statusPublished: true });
+  assertNoCommentCalls(f);
+  assert.equal(f.comments[0].body, marker + '\nprevious findings');
+  assert.equal(f.failures.length, 0);
+});
+
+test('clean pass fails when PR lookup cannot be confirmed', async t => {
+  const f = fixture(t);
+  f.handlers.pull = () => {
+    throw new Error('PRIVATE-RESPONSE');
+  };
+  assert.deepEqual(await f.run(), { passed: false, published: false, statusPublished: true });
+  assert.deepEqual(f.calls.map(call => call.name), ['pull', 'status']);
+  assertNoCommentCalls(f);
+  assert.equal(f.statuses()[0].state, 'failure');
+  assert.equal(
+    f.statuses()[0].description,
+    'Sonar failed: pull request could not be verified. Check PR access, then retry reporting.',
+  );
+  assert.equal(f.failures[0], f.statuses()[0].description);
+  assert.doesNotMatch(JSON.stringify([...f.failures, ...f.warnings]), /PRIVATE-RESPONSE/);
+});
+
+test('clean pass fails when status publication cannot be confirmed without retrying', async t => {
+  const f = fixture(t);
+  f.handlers.status = () => {
+    throw new Error('PRIVATE-RESPONSE');
+  };
+  assert.deepEqual(await f.run(), { passed: false, published: false, statusPublished: false });
+  assert.deepEqual(f.calls.map(call => call.name), ['pull', 'status']);
+  assertNoCommentCalls(f);
+  assert.equal(f.statuses()[0].state, 'success');
+  assert.equal(
+    f.failures[0],
+    'Sonar status publication was not confirmed; inspect reporting logs before retrying.',
+  );
+  assert.doesNotMatch(JSON.stringify([...f.failures, ...f.warnings]), /PRIVATE-RESPONSE/);
 });
 
 test('a successful different PR cannot overwrite a failure on the same commit', async t => {
@@ -286,7 +329,11 @@ test('a successful different PR cannot overwrite a failure on the same commit', 
 
 test('different Sonar projects preserve their own summaries within the same PR and run', async t => {
   const failed = fixture(t, result({ passed: false, gateStatus: 'ERROR', high: 1 }));
-  const passed = scopedFixture(t, { project: 'other-project' });
+  const passed = scopedFixture(
+    t,
+    { project: 'other-project' },
+    { totalIssues: 1, issues: [issue()] },
+  );
   passed.comments = failed.comments;
   assert.equal((await failed.run()).passed, false);
   assert.equal((await passed.run()).passed, true);
@@ -395,7 +442,8 @@ test('pending and final publication use the same status context', async t => {
   assert.equal((await f.run()).passed, true);
   assert.deepEqual(f.statuses().map(status => status.state), ['pending', 'success']);
   assert.deepEqual(f.statuses().map(status => status.context), [statusContext, statusContext]);
-  assert.equal(f.comments.length, 1);
+  assert.equal(f.comments.length, 0);
+  assertNoCommentCalls(f);
 });
 
 for (const [name, changes] of [
@@ -450,7 +498,7 @@ for (const failing of ['pull', 'status']) {
   });
 }
 
-test('authoritative gate passes with unavailable details without claiming zero issues', async t => {
+test('authoritative gate passes with unavailable details without a comment', async t => {
   const f = fixture(
     t,
     result({
@@ -458,11 +506,12 @@ test('authoritative gate passes with unavailable details without claiming zero i
       totalIssues: null,
     }),
   );
-  assert.equal((await f.run()).passed, true);
-  assert.match(f.comments[0].body, /Issue details are unavailable/);
-  assert.match(f.comments[0].body, /exact analysis quality gate/);
-  assert.doesNotMatch(f.comments[0].body, /No current PR findings|Current PR findings: \*\*0/);
-  assert.match(f.comments[0].body, /Full Sonar report/);
+  assert.deepEqual(await f.run(), { passed: true, published: false, statusPublished: true });
+  assert.deepEqual(f.calls.map(call => call.name), ['pull', 'status']);
+  assertNoCommentCalls(f);
+  assert.equal(f.comments.length, 0);
+  assert.equal(f.statuses()[0].description, 'Sonar passed: 0 High, 0 Blocker issues.');
+  assert.equal(f.failures.length, 0);
 });
 
 for (const [name, change] of Object.entries({
@@ -552,10 +601,10 @@ for (const [name, change] of Object.entries({
 })) {
   test(`omits ${name} without changing the exact gate result`, async t => {
     const f = fixture(t, result(change));
-    assert.equal((await f.run()).passed, true);
+    assert.deepEqual(await f.run(), { passed: true, published: false, statusPublished: true });
     assert.equal(f.statuses()[0].state, 'success');
     assert.equal(f.failures.length, 0);
-    assert.match(f.comments[0].body, /Issue details are unavailable/);
+    assertNoCommentCalls(f);
     assert.match(f.warnings[0], /Invalid advisory Sonar details were omitted/);
   });
 }
@@ -754,7 +803,7 @@ for (const [code, reason, nextStep] of [
   });
 
   test(`complete successful evidence ignores ${code}`, async t => {
-    const f = fixture(t, result({ failureCode: code }));
+    const f = fixture(t, result({ failureCode: code, totalIssues: 1, issues: [issue()] }));
     assert.equal((await f.run()).passed, true);
     assert.equal(f.statuses()[0].description, 'Sonar passed: 0 High, 0 Blocker issues.');
     assert.doesNotMatch(f.comments[0].body, /Serialize scans|Sonar task:/);
@@ -903,7 +952,7 @@ test('unconfirmed summary publication takes precedence over analysis findings', 
   assert.equal(f.calls.filter(call => call.name === 'create').length, 1);
 });
 
-test('medium findings do not fail the check', async t => {
+test('medium findings receive a passing summary explaining their non-blocking outcome', async t => {
   const f = fixture(
     t,
     result({
@@ -911,7 +960,12 @@ test('medium findings do not fail the check', async t => {
       issues: [issue()],
     }),
   );
-  assert.equal((await f.run()).passed, true);
+  assert.deepEqual(await f.run(), { passed: true, published: true, statusPublished: true });
+  assert.equal(f.statuses()[0].state, 'success');
+  assert.equal(f.statuses()[0].description, 'Sonar passed: 0 High, 0 Blocker issues.');
+  assert.ok(f.comments[0].body.startsWith(marker + '\n'));
+  assert.match(f.comments[0].body, /\*\*Sonar check: PASS\*\*/);
+  assert.doesNotMatch(f.comments[0].body, /Sonar check: FAIL|Sonar failed:/);
   assert.match(f.comments[0].body, /MEDIUM MAINTAINABILITY/);
   assert.match(f.comments[0].body, /Medium findings alone do not fail/);
   assert.match(f.comments[0].body, /project\/issues\?id=project-key&pullRequest=7&open=issue-key/);
@@ -921,7 +975,7 @@ test('medium findings do not fail the check', async t => {
 });
 
 test('report retry consumes the required original source attempt and updates its comment', async t => {
-  const f = fixture(t);
+  const f = fixture(t, result({ totalIssues: 1, issues: [issue()] }));
   await f.run();
   f.context.runAttempt = 2;
   assert.equal((await f.run()).passed, true);
@@ -933,7 +987,7 @@ test('report retry consumes the required original source attempt and updates its
 });
 
 test('stale PR head is annotated and status remains on analyzed SHA', async t => {
-  const f = fixture(t);
+  const f = fixture(t, result({ totalIssues: 1, issues: [issue()] }));
   f.handlers.pull = () => ({
     data: {
       number: 7,
@@ -947,7 +1001,7 @@ test('stale PR head is annotated and status remains on analyzed SHA', async t =>
   assert.doesNotMatch(f.comments[0].body, new RegExp('b'.repeat(40)));
 });
 
-test('retargeted PR fails without a summary even on the same SHA', async t => {
+test('retargeted clean pass fails without a summary even on the same SHA', async t => {
   const f = fixture(t);
   f.handlers.pull = () => ({
     data: {
@@ -998,7 +1052,7 @@ test('cannot redirect PR lookup or writes to a different repository', async t =>
 });
 
 test('does not edit copied markers written by humans or unrelated bots', async t => {
-  const f = fixture(t);
+  const f = fixture(t, result({ totalIssues: 1, issues: [issue()] }));
   f.comments = [
     {
       id: 1,
@@ -1035,7 +1089,7 @@ test('does not edit copied markers written by humans or unrelated bots', async t
 });
 
 test('updates an authenticated token owners comment, not a same-login different ID', async t => {
-  const f = fixture(t);
+  const f = fixture(t, result({ totalIssues: 1, issues: [issue()] }));
   f.options.actionsToken = false;
   const user = {
     id: 55,
@@ -1064,7 +1118,7 @@ test('updates an authenticated token owners comment, not a same-login different 
 });
 
 test('does not assume an unidentified custom App token owns Actions bot comments', async t => {
-  const f = fixture(t);
+  const f = fixture(t, result({ totalIssues: 1, issues: [issue()] }));
   f.options.actionsToken = false;
   f.comments.push({
     id: 1,
@@ -1081,7 +1135,7 @@ test('does not assume an unidentified custom App token owns Actions bot comments
 });
 
 test('paginates comments before selecting the existing owned marker', async t => {
-  const f = fixture(t);
+  const f = fixture(t, result({ totalIssues: 1, issues: [issue()] }));
   f.comments = Array.from({ length: 100 }, (_, id) => ({
     id: id + 1,
     user: bot,
@@ -1098,7 +1152,7 @@ test('paginates comments before selecting the existing owned marker', async t =>
 });
 
 test('ambiguous duplicate owned comments fail without another comment mutation', async t => {
-  const f = fixture(t);
+  const f = fixture(t, result({ totalIssues: 1, issues: [issue()] }));
   f.comments = [1, 2].map(id => ({
     id,
     user: bot,
@@ -1114,7 +1168,7 @@ test('ambiguous duplicate owned comments fail without another comment mutation',
 
 for (const failing of ['pull', 'user', 'list', 'create', 'update', 'status']) {
   test(`${failing} failure is single-shot and never logs raw API error`, async t => {
-    const f = fixture(t);
+    const f = fixture(t, result({ totalIssues: 1, issues: [issue()] }));
     if (failing === 'update') {
       f.comments.push({
         id: 1,
@@ -1150,7 +1204,7 @@ for (const failing of ['pull', 'user', 'list', 'create', 'update', 'status']) {
 }
 
 test('an ambiguous accepted comment write is not retried and gets a failure status', async t => {
-  const f = fixture(t);
+  const f = fixture(t, result({ totalIssues: 1, issues: [issue()] }));
   f.handlers.create = args => {
     f.comments.push({
       id: 1,
