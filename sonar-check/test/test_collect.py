@@ -463,6 +463,83 @@ class CollectionTests(unittest.TestCase):
         )
         self.assertNotIn("PRIVATE_TOKEN", output.read_text())
 
+    def test_failed_tasks_publish_only_verified_diagnostic_codes(self):
+        # The chronological rejection comes from an observed Sonar CE response.
+        cases = (
+            (
+                "FAILED",
+                "Validation of project failed:\n  o Date of analysis cannot be older "
+                "than the date of the last known analysis on this project. PRIVATE_TOKEN",
+                "analysis-out-of-order",
+                "serialize scans for this PR",
+            ),
+            (
+                "FAILED",
+                "Server failure PRIVATE_TOKEN",
+                "analysis-failed",
+                "analysis failed",
+            ),
+            (
+                "CANCELED",
+                "PRIVATE_TOKEN",
+                "analysis-cancelled",
+                "analysis was cancelled",
+            ),
+        )
+        output = Path(self.directory.name) / "evidence.json"
+        environment = {
+            "APPROVED_SHA": SHA,
+            "APPROVED_BASE_REF": BASE_REF,
+            "GITHUB_REPOSITORY": "example/project",
+            "PR_NUMBER": "42",
+            "SONAR_PROJECT_KEY": "project",
+            "GITHUB_RUN_ID": "100",
+            "GITHUB_RUN_ATTEMPT": "2",
+            "SCANNER_OUTCOME": "failure",
+            "RESULT_PATH": str(output),
+            "REPORT_TASK_PATH": str(self.task_file),
+            "SONAR_URL": HOST,
+            "SONAR_TOKEN": "PRIVATE_TOKEN",
+        }
+        for status, message, code, diagnostic in cases:
+            with self.subTest(status=status, code=code):
+                sonar = FakeSonar()
+                sonar.task.update(status=status, errorMessage=message)
+                stderr = io.StringIO()
+                with patch.dict(os.environ, environment, clear=True), patch.object(
+                    collector, "Sonar", return_value=sonar
+                ), contextlib.redirect_stderr(stderr):
+                    self.assertEqual(collector.main(), 1)
+                evidence = json.loads(output.read_text())
+                self.assertEqual(evidence["failureCode"], code)
+                self.assertEqual(evidence["taskId"], "task-1")
+                self.assertFalse(evidence["complete"] or evidence["passed"])
+                self.assertNotIn("analysisId", evidence)
+                self.assertNotIn("high", evidence)
+                self.assertIn(diagnostic, stderr.getvalue())
+                self.assertIn("CE task task-1", stderr.getvalue())
+                self.assertNotIn("PRIVATE_TOKEN", output.read_text() + stderr.getvalue())
+                self.assertEqual(len(sonar.calls), 1)
+
+    def test_failed_task_diagnostics_require_exact_task_and_scanner_identity(self):
+        for field, value in (
+            ("id", "different-task"),
+            ("componentKey", "different-project"),
+            ("pullRequest", "43"),
+            ("scannerContext", None),
+            ("scannerContext", FakeSonar().task["scannerContext"].replace(SHA, "b" * 40)),
+            ("scannerContext", FakeSonar().task["scannerContext"].replace(BASE_REF, "main")),
+        ):
+            with self.subTest(field=field, value=value):
+                sonar = FakeSonar()
+                sonar.task.update(status="FAILED", errorMessage="Server failure")
+                sonar.task[field] = value
+                evidence = result()
+                with self.assertRaises(collector.ValidationError):
+                    collector.collect(sonar, evidence, self.task_file, "failure")
+                self.assertNotIn("failureCode", evidence)
+                self.assertNotIn("taskId", evidence)
+
     def test_main_requires_valid_approved_target_branch(self):
         for base_ref in ("", "release candidate", "main\nother"):
             with patch.dict(

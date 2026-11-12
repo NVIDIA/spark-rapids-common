@@ -358,6 +358,22 @@ def collect(sonar, result, task_file, scanner_outcome):
         )
         if task.get("status") == "SUCCESS":
             break
+        if task.get("status") in ("FAILED", "CANCELED"):
+            validate_context(task.get("scannerContext"), result)
+            failure_code = "analysis-failed"
+            detail = "Sonar server analysis failed"
+            if task["status"] == "CANCELED":
+                failure_code = "analysis-cancelled"
+                detail = "Sonar server analysis was cancelled"
+            elif isinstance(task.get("errorMessage"), str) and (
+                "Date of analysis cannot be older than the date of the last known analysis"
+                in task["errorMessage"]
+            ):
+                failure_code = "analysis-out-of-order"
+                detail = "A newer analysis finished first; serialize scans for this PR, then rerun"
+            # Publish only a fixed diagnostic code, never server response text.
+            result.update(taskId=task_id, failureCode=failure_code)
+            raise ValidationError(f"{detail} (CE task {task_id})")
         require(
             task.get("status") in ("PENDING", "IN_PROGRESS"),
             "Sonar analysis did not complete",

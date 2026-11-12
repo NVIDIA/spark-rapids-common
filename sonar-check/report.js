@@ -167,7 +167,7 @@ async function readResult(filename) {
   }
 }
 
-function validateResult(data, target, options, sonarUrl) {
+function validateEnvelope(data, target, options) {
   requireValue(
     data &&
       data.schema === 2 &&
@@ -179,8 +179,46 @@ function validateResult(data, target, options, sonarUrl) {
       data.pr === target.pr &&
       data.runId === target.runId &&
       data.runAttempt === options.sourceAttempt &&
-      data.project === options.project &&
-      data.complete === true &&
+      data.project === options.project,
+  );
+}
+
+function validateFailure(data, target, options) {
+  if (!data || data.complete !== false || data.passed !== false) {
+    return undefined;
+  }
+  validateEnvelope(data, target, options);
+  requireValue(text(data.taskId, 200) && /^[a-z0-9_-]+$/i.test(data.taskId));
+  // The trusted collector emits these codes only after verifying CE/scanner
+  // identity. Never publish its raw error text or incomplete analysis counts.
+  switch (data.failureCode) {
+    case 'analysis-out-of-order':
+      return {
+        reason: 'a newer analysis finished first',
+        nextStep: 'Serialize scans for this PR, then rerun.',
+        taskId: data.taskId,
+      };
+    case 'analysis-failed':
+      return {
+        reason: 'Sonar server analysis failed',
+        nextStep: 'Inspect the collection step and Sonar task details before rerunning.',
+        taskId: data.taskId,
+      };
+    case 'analysis-cancelled':
+      return {
+        reason: 'Sonar server analysis was cancelled',
+        nextStep: 'Review the Sonar task cancellation, then rerun.',
+        taskId: data.taskId,
+      };
+    default:
+      return undefined;
+  }
+}
+
+function validateResult(data, target, options, sonarUrl) {
+  validateEnvelope(data, target, options);
+  requireValue(
+    data.complete === true &&
       typeof data.passed === 'boolean' &&
       text(data.taskId, 200) &&
       /^[a-z0-9_-]+$/i.test(data.taskId) &&
@@ -277,7 +315,7 @@ function link(value) {
   );
 }
 
-function analysisFailure(evidence, scanResult) {
+function analysisFailure(evidence, scanResult, failure) {
   if (evidence) {
     if (evidence.high > 0 || evidence.blocker > 0) {
       return `${evidence.high} High, ${evidence.blocker} Blocker issues`;
@@ -291,6 +329,12 @@ function analysisFailure(evidence, scanResult) {
     cancelled: 'scan was cancelled',
     skipped: 'scan was skipped',
   };
+  if (scanResult === 'cancelled' || scanResult === 'skipped') {
+    return scanFailures[scanResult];
+  }
+  if (failure) {
+    return failure.reason;
+  }
   if (scanFailures[scanResult]) {
     return scanFailures[scanResult];
   }
@@ -300,7 +344,7 @@ function analysisFailure(evidence, scanResult) {
   return evidence.passed ? '' : 'analysis was not marked as passed';
 }
 
-function summary(target, options, evidence, passed, stale, retargeted, marker, reason) {
+function summary(target, options, evidence, passed, stale, retargeted, marker, reason, failure) {
   const run = `${target.server}/${target.repository}/actions/runs/${target.runId}`;
   const scanUrl = `${run}/attempts/${options.sourceAttempt}`;
   const reportUrl = `${run}/attempts/${target.runAttempt}`;
@@ -320,6 +364,9 @@ function summary(target, options, evidence, passed, stale, retargeted, marker, r
         : ''),
     '',
   ];
+  if (failure && reason === failure.reason) {
+    lines.push(failure.nextStep, '', `Sonar task: \`${failure.taskId}\`.`, '');
+  }
   if (evidence) {
     lines.push(
       `Exact analysis quality gate: **${evidence.gateStatus}**. New High: **${evidence.high}**; ` +
@@ -507,25 +554,30 @@ async function report({ github, core, context, options }) {
     return publishPending(github, core, target, options, scope.statusContext);
   }
   let evidence;
+  let failure;
   let validOptions = false;
   try {
     validateOptions(options, target);
     validOptions = true;
-    evidence = validateResult(await readResult(options.resultPath), target, options, scope.sonarUrl);
-    try {
-      validateDetails(evidence);
-    } catch {
-      core.warning(
-        'Invalid advisory Sonar details were omitted; the exact analysis result remains usable.',
-      );
-      evidence = {
-        ...evidence,
-        detailsComplete: false,
-        totalIssues: null,
-        issues: [],
-        detailsScope: null,
-        detailsCapturedAt: null,
-      };
+    const data = await readResult(options.resultPath);
+    failure = validateFailure(data, target, options);
+    if (!failure) {
+      evidence = validateResult(data, target, options, scope.sonarUrl);
+      try {
+        validateDetails(evidence);
+      } catch {
+        core.warning(
+          'Invalid advisory Sonar details were omitted; the exact analysis result remains usable.',
+        );
+        evidence = {
+          ...evidence,
+          detailsComplete: false,
+          totalIssues: null,
+          issues: [],
+          detailsScope: null,
+          detailsCapturedAt: null,
+        };
+      }
     }
   } catch {
     core.warning(
@@ -535,7 +587,7 @@ async function report({ github, core, context, options }) {
     );
   }
   let reason = validOptions
-    ? analysisFailure(evidence, options.scanResult)
+    ? analysisFailure(evidence, options.scanResult, failure)
     : 'invalid reporting configuration';
   let passed = Boolean(
     evidence &&
@@ -579,6 +631,7 @@ async function report({ github, core, context, options }) {
         retargeted,
         marker,
         reason,
+        failure,
       );
       await publishComment(github, target, body, marker, options.actionsToken === true);
       published = true;

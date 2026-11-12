@@ -21,6 +21,10 @@ The status and summary name the verified failure, for example
 `Sonar failed: 2 High, 0 Blocker issues.` or `Sonar failed: scan was cancelled.`
 Issue counts describe new issues in the exact analysis and include both severities.
 Reporting failures identify the operation whose completion could not be confirmed.
+If Sonar rejects an older concurrent analysis, the summary says that a newer
+analysis finished first and asks the caller to serialize scans before rerunning.
+Failed or cancelled server tasks never display unverified issue counts or raw
+server error text.
 
 Issue APIs return mutable current PR data, not historical analysis snapshots.
 When available, the summary labels these observations with their collection time
@@ -46,8 +50,10 @@ result when they share a commit. Summary comments use the same scope, so project
 reported in one run keep separate comments. Pin both phases to the same reviewed
 action revision. New consumers must not write or require the old unqualified
 `Sonar check` context. Preserve any existing required checks until a consumer's
-merge-policy migration is explicitly approved. Serialize runs for the same PR;
-different PRs can run concurrently.
+merge-policy migration is explicitly approved. Serialize scans for the same Sonar
+project and PR, including waiting for server processing and collection to finish;
+overlapping submissions can be rejected when their analyses finish out of order.
+Different PRs can run concurrently.
 Rerun approval and scanning when the PR target branch changes
 (`pull_request.edited`), as well as on new commits.
 

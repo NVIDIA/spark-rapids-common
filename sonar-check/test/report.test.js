@@ -670,6 +670,120 @@ for (const [scanResult, reason] of [
   });
 }
 
+function failedAnalysis(failureCode = 'analysis-out-of-order', changes = {}) {
+  return result({
+    complete: false,
+    passed: false,
+    failureCode,
+    high: 99,
+    blocker: 99,
+    error: 'SECRET-RAW-ERROR',
+    ...changes,
+  });
+}
+
+for (const [code, reason, nextStep] of [
+  [
+    'analysis-out-of-order',
+    'a newer analysis finished first',
+    'Serialize scans for this PR, then rerun.',
+  ],
+  [
+    'analysis-failed',
+    'Sonar server analysis failed',
+    'Inspect the collection step and Sonar task details before rerunning.',
+  ],
+  [
+    'analysis-cancelled',
+    'Sonar server analysis was cancelled',
+    'Review the Sonar task cancellation, then rerun.',
+  ],
+]) {
+  test(`verified incomplete ${code} reports only safe failure details`, async t => {
+    const f = fixture(t, failedAnalysis(code));
+    assert.equal((await f.run()).passed, false);
+    assert.equal(f.statuses()[0].description, `Sonar failed: ${reason}.`);
+    assert.match(f.comments[0].body, /Expected commit:/);
+    assert.ok(f.comments[0].body.includes(nextStep));
+    assert.match(f.comments[0].body, /Sonar task: `task-id`/);
+    assert.doesNotMatch(f.comments[0].body, /Analyzed commit|quality gate:|New High:|99|SECRET-RAW-ERROR/);
+    assert.equal(f.writes().length, 2);
+  });
+
+  test(`complete successful evidence ignores ${code}`, async t => {
+    const f = fixture(t, result({ failureCode: code }));
+    assert.equal((await f.run()).passed, true);
+    assert.equal(f.statuses()[0].description, 'Sonar passed: 0 High, 0 Blocker issues.');
+    assert.doesNotMatch(f.comments[0].body, /Serialize scans|Sonar task:/);
+  });
+}
+
+for (const [field, value] of Object.entries({
+  schema: 3,
+  repository: 'another/project',
+  sha: 'b'.repeat(40),
+  baseRef: 'another-target',
+  pr: 8,
+  runId: '124',
+  runAttempt: '2',
+  project: 'another-project',
+  taskId: 'invalid/task',
+  complete: null,
+  passed: true,
+})) {
+  for (const candidate of new Set([value, undefined, null])) {
+    test(`incomplete failure code rejects ${field}=${candidate}`, async t => {
+      const f = fixture(t, failedAnalysis('analysis-out-of-order', { [field]: candidate }));
+      assert.equal((await f.run()).passed, false);
+      assert.equal(f.statuses()[0].description, 'Sonar failed: analysis result could not be verified.');
+      assert.equal(f.statuses()[0].sha, sha);
+      assert.doesNotMatch(
+        f.comments[0].body,
+        /newer analysis|Serialize scans|Sonar task:|99|SECRET-RAW-ERROR/,
+      );
+    });
+  }
+}
+
+for (const code of ['unknown', '__proto__', 'constructor', 'toString', null, {}, 123]) {
+  test(`unrecognized failure code ${JSON.stringify(code)} retains the generic failure`, async t => {
+    const f = fixture(t, failedAnalysis(code));
+    assert.equal((await f.run()).passed, false);
+    assert.equal(f.statuses()[0].description, 'Sonar failed: analysis result could not be verified.');
+    assert.doesNotMatch(f.comments[0].body, /newer analysis|Serialize scans|Sonar task:|99|SECRET-RAW-ERROR/);
+  });
+}
+
+for (const [scanResult, reason] of [
+  ['cancelled', 'scan was cancelled'],
+  ['skipped', 'scan was skipped'],
+]) {
+  test(`${scanResult} scan takes precedence over a server failure code`, async t => {
+    const f = fixture(t, failedAnalysis());
+    f.options.scanResult = scanResult;
+    assert.equal((await f.run()).passed, false);
+    assert.equal(f.statuses()[0].description, `Sonar failed: ${reason}.`);
+    assert.doesNotMatch(f.comments[0].body, /newer analysis|Serialize scans|Sonar task:/);
+  });
+}
+
+test('verified server reason explains a failed scan job', async t => {
+  const f = fixture(t, failedAnalysis());
+  f.options.scanResult = 'failure';
+  assert.equal((await f.run()).passed, false);
+  assert.equal(f.statuses()[0].description, 'Sonar failed: a newer analysis finished first.');
+});
+
+test('verified complete High findings ignore failure codes', async t => {
+  const f = fixture(
+    t,
+    result({ passed: false, gateStatus: 'ERROR', high: 1, failureCode: 'analysis-out-of-order' }),
+  );
+  assert.equal((await f.run()).passed, false);
+  assert.equal(f.statuses()[0].description, 'Sonar failed: 1 High, 0 Blocker issues.');
+  assert.doesNotMatch(f.comments[0].body, /newer analysis|Serialize scans|Sonar task:/);
+});
+
 test('maximum verified issue counts fit the commit status limit', async t => {
   const f = fixture(
     t,
