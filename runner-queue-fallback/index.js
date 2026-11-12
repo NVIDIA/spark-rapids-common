@@ -261,7 +261,7 @@ async function main() {
         }
         identityConfirmed = true;
         observeWorker(job);
-        if (run.status === 'completed') {
+        if (run.status === 'completed' || job?.status === 'completed') {
           if (run.conclusion === 'success' || run.conclusion === null) {
             // Run and job APIs can publish completion at different times.
             ({run, job} = await confirmCompletion(api, active, state, (startedAt ?? Date.now()) + executionLimit,
@@ -291,7 +291,7 @@ async function main() {
             // Re-read immediately before cancellation, then inspect allocation again after it.
             const latest = await snapshot(api, active);
             observeWorker(latest.job);
-            if (latest.run.status === 'completed') {
+            if (latest.run.status === 'completed' || latest.job?.status === 'completed') {
               // Process known completion before another API view can regress to queued.
               pendingState = latest;
               continue;

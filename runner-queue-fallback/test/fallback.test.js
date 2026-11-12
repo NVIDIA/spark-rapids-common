@@ -236,6 +236,68 @@ for (const [family, runners] of [['GPU', gpuRunners], ['CPU', cpuRunners]]) {
   }
 }
 
+for (const [family, runners] of [['GPU', gpuRunners], ['CPU', cpuRunners]]) {
+  for (const first of ['run', 'job']) {
+    test(`${family} preserves non-overlapping success views: ${first} first`, {timeout: 5000}, async t => {
+      const f = fixture(t, runners);
+      f.onDispatch = run => {
+        f.acquire(run);
+        run.status = run.job.status = 'in_progress';
+        Object.assign(first === 'run' ? run : run.job, {status: 'completed', conclusion: 'success'});
+      };
+      f.onSleep = milliseconds => {
+        if (milliseconds !== 5000) return;
+        const run = f.runs[0];
+        Object.assign(first === 'run' ? run : run.job, {status: 'in_progress', conclusion: null});
+        Object.assign(first === 'run' ? run.job : run, {status: 'completed', conclusion: 'success'});
+      };
+      assert.equal(await f.run(), 0);
+      assert.deepEqual(f.sleeps, [15000, 5000]);
+      assert.deepEqual(f.events, ['dispatch:100']);
+      assert.equal(f.errors.length, 0);
+      assert.equal(f.state(), null);
+    });
+  }
+}
+
+for (const [change, expected] of [
+  ['run failed', /run completed\/failure/],
+  ['worker cancelled', /worker completed\/cancelled/],
+  ['parent cancelled', /Parent run is no longer active/],
+  ['source changed', /Source ref changed/],
+  ['attempt changed', /identity mismatch/],
+  ['label changed', /selected runner label/],
+  ['missing conclusion', /non-success or invalid completion state/],
+]) {
+  test(`retained success cannot hide ${change}`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    f.onDispatch = run => {
+      f.finish(run, 'success');
+      (change === 'worker cancelled' ? run : run.job).conclusion = null;
+    };
+    f.onSleep = milliseconds => {
+      if (milliseconds !== 5000) return;
+      const run = f.runs[0];
+      Object.assign(run, {status: 'in_progress', conclusion: null});
+      run.job.conclusion = 'success';
+      if (change === 'run failed') Object.assign(run, {status: 'completed', conclusion: 'failure'});
+      if (change === 'worker cancelled') {
+        Object.assign(run, {status: 'completed', conclusion: 'success'});
+        run.job.conclusion = 'cancelled';
+      }
+      if (change === 'parent cancelled') Object.assign(f.parent, {status: 'completed', conclusion: 'cancelled'});
+      if (change === 'source changed') f.source = 'c'.repeat(40);
+      if (change === 'attempt changed') run.run_attempt = 2;
+      if (change === 'label changed') run.job.labels = ['unapproved'];
+      if (change === 'missing conclusion') delete run.conclusion;
+    };
+    assert.equal(await f.run(), 1);
+    assert.equal(f.runs.length, 1);
+    assert.match(f.errors[0], expected);
+    assert.match(f.errors[0], /no workload retry/);
+  });
+}
+
 for (const [minutes, limit] of [[1, 60000], [5, 120000]]) {
   test(`completion visibility expires within ${limit / 1000}s without redispatch`, {timeout: 5000}, async t => {
     const f = fixture(t);
@@ -373,6 +435,29 @@ for (const conclusion of ['success', null, 'failure', 'cancelled']) {
       assert.equal(f.errors.length, 0);
     } else {
       assert.match(f.errors[0], new RegExp(`Worker 100: ${conclusion};.*no workload retry`));
+    }
+  });
+}
+
+for (const conclusion of ['success', null, 'failure', 'cancelled']) {
+  test(`pre-cancel worker completed/${conclusion} enters completion handling`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    let jobReads = 0;
+    f.beforeRequest = request => {
+      if (request.route.endsWith('/jobs') && ++jobReads === 3) {
+        return Response.json({total_count: 1, jobs: [{...f.runs[0].job, status: 'completed', conclusion}]});
+      }
+    };
+    f.onSleep = milliseconds => {
+      if (milliseconds === 5000) f.finish(f.runs[0], 'success');
+    };
+    const successful = conclusion === 'success' || conclusion === null;
+    assert.equal(await f.run(), successful ? 0 : 1);
+    assert.equal(f.runs.length, 1);
+    if (successful) {
+      assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+    } else {
+      assert.match(f.errors[0], new RegExp(`worker completed/${conclusion}.*no workload retry`));
     }
   });
 }

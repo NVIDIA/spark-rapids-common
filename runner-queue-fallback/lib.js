@@ -226,6 +226,7 @@ async function snapshot(api, active, metadataDeadline = 0, requestDeadline = Inf
 async function confirmCompletion(api, active, state, executionDeadline, ensureCurrent) {
   const startedAt = Date.now();
   const deadline = Math.min(startedAt + 120000, executionDeadline);
+  const successful = {};
   let observation;
   try {
     while (true) {
@@ -239,8 +240,10 @@ async function confirmCompletion(api, active, state, executionDeadline, ensureCu
         throw new Error('non-success or invalid completion state');
       }
       await ensureCurrent(deadline, job);
-      if (run.status === 'completed' && run.conclusion === 'success' &&
-          job.status === 'completed' && job.conclusion === 'success') return state;
+      // Preserve each successful terminal view, but only after validating the latest view.
+      if (run.status === 'completed' && run.conclusion === 'success') successful.run = run;
+      if (job.status === 'completed' && job.conclusion === 'success') successful.job = job;
+      if (successful.run && successful.job) return successful;
       const remaining = deadline - Date.now();
       const progress = `Completion confirmation: child ${active.id}; ` +
         `elapsed ${Math.round((Date.now() - startedAt) / 1000)}s/` +
