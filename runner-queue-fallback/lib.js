@@ -112,15 +112,15 @@ function client() {
   };
 }
 
-async function currentSource(api, ref, sha) {
+async function currentSource(api, ref, sha, deadline = Infinity) {
   if (!/^refs\/(heads|tags|pull)\/.+/.test(ref) || !/^[a-f0-9]{40}$/.test(sha)) {
     throw new Error('source-ref must be a full ref and source-sha a full lowercase commit SHA');
   }
-  const commit = await api(`/commits/${encodeURIComponent(ref)}`);
+  const commit = await api(`/commits/${encodeURIComponent(ref)}`, 'GET', undefined, deadline);
   if (commit.sha !== sha) throw new Error('Source ref changed; obtain approval for the new SHA');
 }
 
-async function parentActive(api, id, attempt, startupDeadline = 0) {
+async function parentActive(api, id, attempt, startupDeadline = 0, requestDeadline = Infinity) {
   if (!/^\d+$/.test(String(id)) || !/^\d+$/.test(String(attempt))) {
     throw new Error('Invalid parent run identity');
   }
@@ -132,7 +132,8 @@ async function parentActive(api, id, attempt, startupDeadline = 0) {
   while (true) {
     let parent;
     try {
-      parent = await api(`/actions/runs/${id}`, 'GET', undefined, startupDeadline || Infinity);
+      parent = await api(`/actions/runs/${id}`, 'GET', undefined,
+        Math.min(startupDeadline || Infinity, requestDeadline));
     } catch (error) {
       if (error.status !== 404 && error.code !== 'API_DEADLINE') throw error;
       if (!startupDeadline || error.code === 'API_DEADLINE') {
@@ -222,19 +223,56 @@ async function snapshot(api, active, metadataDeadline = 0, requestDeadline = Inf
   return {run, job: data.jobs[0]};
 }
 
-async function cancel(api, id, queuedWorker = null) {
-  const run = await api(`/actions/runs/${id}`);
+async function confirmCompletion(api, active, state, executionDeadline, ensureCurrent) {
+  const startedAt = Date.now();
+  const deadline = Math.min(startedAt + 120000, executionDeadline);
+  let observation;
+  try {
+    while (true) {
+      const {run, job} = state;
+      observation = `run ${run.status}/${String(run.conclusion)}; ` +
+        `worker ${job.status}/${String(job.conclusion)}`;
+      // Never turn a terminal error or malformed result into a visibility delay.
+      // Execution evidence is recorded independently; run success cannot replace it.
+      if (![run, job].every(value => ['queued', 'in_progress', 'completed'].includes(value.status) &&
+          (value.conclusion === null || value.conclusion === 'success'))) {
+        throw new Error('non-success or invalid completion state');
+      }
+      await ensureCurrent(deadline, job);
+      if (run.status === 'completed' && run.conclusion === 'success' &&
+          job.status === 'completed' && job.conclusion === 'success') return state;
+      const remaining = deadline - Date.now();
+      const progress = `Completion confirmation: child ${active.id}; ` +
+        `elapsed ${Math.round((Date.now() - startedAt) / 1000)}s/` +
+        `${Math.max(0, deadline - startedAt) / 1000}s; ${observation}`;
+      if (remaining <= 0) throw new Error(`${progress}; confirmation timed out`);
+      console.log(`${progress}; next poll in ${Math.min(5000, remaining) / 1000}s`);
+      await sleep(Math.min(5000, remaining));
+      state = await snapshot(api, active, 0, deadline);
+    }
+  } catch (error) {
+    throw new Error(`Worker ${active.id}: completion confirmation failed; ${observation}; ` +
+      `${error.message}; no workload retry`, {cause: error});
+  }
+}
+
+async function cancel(api, id, queuedWorker = null, requestDeadline = Infinity) {
+  const startedAt = Date.now();
+  const deadline = Math.min(startedAt + 120000, requestDeadline);
+  const run = await api(`/actions/runs/${id}`, 'GET', undefined, deadline);
+  if (queuedWorker && run.conclusion !== null && run.conclusion !== 'cancelled') {
+    throw new Error(`Queue cancellation observed a non-cancelled or invalid result; no fallback; ` +
+      `child ${id}; run ${run.status}/${String(run.conclusion)}`);
+  }
   if (run.status === 'completed' && !queuedWorker) return;
   if (run.status !== 'completed') {
     try {
-      await api(`/actions/runs/${id}/cancel`, 'POST');
+      await api(`/actions/runs/${id}/cancel`, 'POST', undefined, deadline);
     } catch (error) {
       // 409 can mean the run finished between GET and POST. Still confirm completion below.
       if (error.status !== 409) throw error;
     }
   }
-  const startedAt = Date.now();
-  const deadline = startedAt + 120000;
   let lastObservation = '';
   while (true) {
     let progress;
@@ -266,8 +304,16 @@ async function cancel(api, id, queuedWorker = null) {
         console.log(`${progress}; cancellation confirmed; polling finished`);
         return;
       }
-    } else if ((await api(`/actions/runs/${id}`)).status === 'completed') {
-      return;
+    } else {
+      try {
+        const observed = await api(`/actions/runs/${id}`, 'GET', undefined, deadline);
+        if (observed.status === 'completed') return;
+        lastObservation = `run ${observed.status}/${String(observed.conclusion)}`;
+      } catch (error) {
+        if (error.code !== 'API_DEADLINE') throw error;
+        lastObservation += `; ${error.message}`;
+        break;
+      }
     }
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
@@ -275,7 +321,7 @@ async function cancel(api, id, queuedWorker = null) {
     await sleep(Math.min(5000, remaining));
   }
   throw new Error(`Cancellation unconfirmed for child ${id} after ${Math.round((Date.now() - startedAt) / 1000)}s` +
-    ' (120s confirmation window); no further dispatch is allowed' +
+    ` (${Math.max(0, deadline - startedAt) / 1000}s confirmation window); no further dispatch is allowed` +
     (lastObservation ? `; last observation: ${lastObservation}` : ''));
 }
 
@@ -292,19 +338,27 @@ async function cleanup(api, active) {
       event: 'workflow_dispatch', created: `>=${active.created}`, per_page: '100',
     });
     for (let page = 1; page <= 10; page++) {
-      const data = await api(`/actions/workflows/${encodeURIComponent(active.workflow)}/runs?${query}&page=${page}`);
+      let data;
+      try {
+        data = await api(`/actions/workflows/${encodeURIComponent(active.workflow)}/runs?${query}&page=${page}`,
+          'GET', undefined, deadline);
+      } catch (error) {
+        throw new Error(`Dispatch outcome unknown for ${active.request}; ${error.message}`, {cause: error});
+      }
       const matches = data.workflow_runs.filter(run => run.display_title === active.request);
       if (matches.length) {
-        for (const run of matches) await cancel(api, run.id);
+        for (const run of matches) await cancel(api, run.id, null, deadline);
         return;
       }
       if (page * 100 >= data.total_count) break;
       if (page === 10) throw new Error('Cannot enumerate all runs for ambiguous dispatch cleanup');
     }
-    await sleep(5000);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(5000, remaining));
   } while (Date.now() < deadline);
   throw new Error(`Dispatch outcome unknown for ${active.request}; check the child workflow manually`);
 }
 
 module.exports = {input, output, save, fail, client, currentSource, parentActive,
-  acquired, snapshot, cancel, cleanup, sleep};
+  acquired, snapshot, confirmCompletion, cancel, cleanup, sleep};

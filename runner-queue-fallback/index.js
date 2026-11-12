@@ -17,7 +17,7 @@
 const fs = require('node:fs');
 const {randomUUID} = require('node:crypto');
 const {input, output, save, fail, client, currentSource, parentActive,
-  acquired, snapshot, cancel, cleanup, sleep} = require('./lib');
+  acquired, snapshot, confirmCompletion, cancel, cleanup, sleep} = require('./lib');
 
 // Linux defaults from enterprise-runner-configuration's runner catalog and Spark grants.
 // Keep architectures and GPU counts separate; consumers may have narrower grants.
@@ -151,10 +151,10 @@ async function main() {
   const parentAttempt = process.env.GITHUB_RUN_ATTEMPT;
   const workflowSha = (await api(`/commits/${encodeURIComponent(workflowRef)}`)).sha;
   let parentConfirmed = false;
-  const ensureCurrent = async (sourceMayAdvance = false) => {
-    await parentActive(api, parentId, parentAttempt, parentConfirmed ? 0 : Date.now() + 120000);
+  const ensureCurrent = async (sourceMayAdvance = false, deadline = Infinity) => {
+    await parentActive(api, parentId, parentAttempt, parentConfirmed ? 0 : Date.now() + 120000, deadline);
     parentConfirmed = true;
-    if (!sourceMayAdvance) await currentSource(api, sourceRef, sourceSha);
+    if (!sourceMayAdvance) await currentSource(api, sourceRef, sourceSha, deadline);
   };
   const report = (active, outcome, queuedAt) => {
     const wait = queuedAt ? `; observed queue wait ${Math.round((Date.now() - queuedAt) / 1000)}s` : '';
@@ -216,34 +216,9 @@ async function main() {
       let identityConfirmed = false;
       let queuedAt;
       let startedAt;
+      let pendingState;
       let pollRound = 0;
-      while (true) {
-        pollRound++;
-        // An opted-in worker may have started before this poll sees the new source.
-        // Confirm its identity/allocation before deciding whether freshness is required.
-        await ensureCurrent(pinAfterStart);
-        // Dispatch can return before the child's run metadata has finished initializing.
-        let state;
-        try {
-          state = await snapshot(api, active, identityConfirmed ? 0 : jobDeadline);
-        } catch (error) {
-          if (!identityConfirmed && Date.now() >= jobDeadline) {
-            throw new Error(`Worker metadata did not become valid within the 120s startup window` +
-              `; last observation: ${error.message}`);
-          }
-          throw error;
-        }
-        const {run, job, metadataPending} = state;
-        if (pinAfterStart && !startedAt && (metadataPending || !acquired(job))) {
-          await currentSource(api, sourceRef, sourceSha);
-        }
-        const progress = `Poll #${pollRound}: child ${active.id}; elapsed ${Math.round((Date.now() - dispatchedAt) / 1000)}s`;
-        if (metadataPending) {
-          console.log(`${progress}; metadata pending (120s startup window): ${metadataPending}; next poll in 5s`);
-          await sleep(5000);
-          continue;
-        }
-        identityConfirmed = true;
+      const observeWorker = job => {
         const jobUrl = job?.html_url || (job?.id ? `${active.url}/job/${job.id}` : null);
         if (jobUrl && jobUrl !== active.jobUrl) {
           active.jobUrl = jobUrl;
@@ -256,13 +231,52 @@ async function main() {
             console.log(`Source pinned to ${sourceSha}; later source-ref changes will not stop this worker`);
           }
         }
+      };
+      while (true) {
+        pollRound++;
+        // An opted-in worker may have started before this poll sees the new source.
+        // Confirm its identity/allocation before deciding whether freshness is required.
+        await ensureCurrent(pinAfterStart);
+        // Dispatch can return before the child's run metadata has finished initializing.
+        let state;
+        try {
+          state = pendingState ?? await snapshot(api, active, identityConfirmed ? 0 : jobDeadline);
+          pendingState = undefined;
+        } catch (error) {
+          if (!identityConfirmed && Date.now() >= jobDeadline) {
+            throw new Error(`Worker metadata did not become valid within the 120s startup window` +
+              `; last observation: ${error.message}`);
+          }
+          throw error;
+        }
+        let {run, job, metadataPending} = state;
+        if (pinAfterStart && !startedAt && (metadataPending || !acquired(job))) {
+          await currentSource(api, sourceRef, sourceSha);
+        }
+        const progress = `Poll #${pollRound}: child ${active.id}; elapsed ${Math.round((Date.now() - dispatchedAt) / 1000)}s`;
+        if (metadataPending) {
+          console.log(`${progress}; metadata pending (120s startup window): ${metadataPending}; next poll in 5s`);
+          await sleep(5000);
+          continue;
+        }
+        identityConfirmed = true;
+        observeWorker(job);
         if (run.status === 'completed') {
+          if (run.conclusion === 'success' || run.conclusion === null) {
+            // Run and job APIs can publish completion at different times.
+            ({run, job} = await confirmCompletion(api, active, state, (startedAt ?? Date.now()) + executionLimit,
+              async (deadline, observedJob) => {
+                observeWorker(observedJob);
+                await ensureCurrent(pinAfterStart && Boolean(startedAt), deadline);
+              }));
+          }
           console.log(`${progress}; run completed/${run.conclusion}; worker ${job?.conclusion}; polling finished`);
           report(active, `completed: ${run.conclusion}`, undefined);
-          if (run.conclusion !== 'success' || job?.conclusion !== 'success' || !startedAt) {
-            throw new Error(`Worker ${active.id}: ${run.conclusion}; no workload retry`);
+          if (run.conclusion !== 'success' || job?.status !== 'completed' ||
+              job?.conclusion !== 'success' || !startedAt) {
+            throw new Error(`Worker ${active.id}: ${run.conclusion}; ` +
+              `worker ${job?.status}/${job?.conclusion}; no workload retry`);
           }
-          await ensureCurrent(pinAfterStart && Boolean(startedAt));
           active = null;
           save(null);
           return;
@@ -276,7 +290,13 @@ async function main() {
           if (Date.now() - queuedAt >= queueLimit) {
             // Re-read immediately before cancellation, then inspect allocation again after it.
             const latest = await snapshot(api, active);
-            if (acquired(latest.job) || latest.run.status === 'completed') continue;
+            observeWorker(latest.job);
+            if (latest.run.status === 'completed') {
+              // Process known completion before another API view can regress to queued.
+              pendingState = latest;
+              continue;
+            }
+            if (startedAt) continue;
             if (latest.job?.status !== 'queued') throw new Error('Child left the runner queue; no fallback');
             await cancel(api, active.id, active);
             report(active, 'queue timeout; cancellation confirmed', queuedAt);

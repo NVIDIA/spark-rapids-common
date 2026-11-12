@@ -207,6 +207,274 @@ test('primary success forwards immutable inputs and reports the selected run', {
   assert.ok(summary.includes(`[Worker artifacts](${url})`));
 });
 
+for (const [family, runners] of [['GPU', gpuRunners], ['CPU', cpuRunners]]) {
+  for (const [runConclusion, status, conclusion] of [
+    ['success', 'queued', null], ['success', 'in_progress', null],
+    ['success', 'completed', null], ['success', 'in_progress', 'success'],
+    [null, 'completed', 'success'], [null, 'completed', null],
+  ]) {
+    test(`${family} reconciles run completed/${runConclusion} with worker ${status}/${conclusion}`, {timeout: 5000}, async t => {
+      const f = fixture(t, runners);
+      f.onDispatch = run => {
+        f.finish(run, 'success');
+        run.conclusion = runConclusion;
+        Object.assign(run.job, {status, conclusion});
+      };
+      f.onSleep = milliseconds => {
+        if (milliseconds === 5000) {
+          f.runs[0].conclusion = 'success';
+          Object.assign(f.runs[0].job, {status: 'completed', conclusion: 'success'});
+        }
+      };
+      assert.equal(await f.run(), 0);
+      assert.deepEqual(f.sleeps, [15000, 5000]);
+      assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+      assert.match(f.logs.join('\n'), /Completion confirmation: child 100;.*next poll in 5s/);
+      assert.equal(f.errors.length, 0);
+      assert.equal(f.state(), null);
+    });
+  }
+}
+
+for (const [minutes, limit] of [[1, 60000], [5, 120000]]) {
+  test(`completion visibility expires within ${limit / 1000}s without redispatch`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    process.env['INPUT_EXECUTION-TIMEOUT-MINUTES'] = String(minutes);
+    f.onDispatch = run => {
+      f.finish(run, 'success');
+      run.job.conclusion = null;
+    };
+    const start = f.now;
+    assert.equal(await f.run(), 1);
+    assert.equal(f.now - start, 15000 + limit);
+    assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+    assert.match(f.errors.join('\n'), /run completed\/success; worker completed\/null/);
+    assert.match(f.errors.join('\n'), /confirmation timed out.*no workload retry/);
+    assert.match(fs.readFileSync(process.env.GITHUB_STEP_SUMMARY, 'utf8'), /completion confirmation failed/);
+    assert.equal(f.state(), null);
+  });
+}
+
+for (const [status, conclusion] of [
+  ['completed', 'failure'], ['completed', 'cancelled'], ['completed', 'skipped'],
+  ['in_progress', undefined], ['completed', ''], ['waiting', null],
+]) {
+  test(`completion rejects worker ${status}/${conclusion} without grace`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    f.onDispatch = run => {
+      f.finish(run, 'success');
+      Object.assign(run.job, {status, conclusion});
+    };
+    assert.equal(await f.run(), 1);
+    assert.deepEqual(f.sleeps, [15000]);
+    assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+    assert.ok(f.errors[0].includes(`worker ${status}/${conclusion}`));
+    assert.match(f.errors[0], /non-success or invalid completion state/);
+  });
+}
+
+test('completion wait uses only the remaining execution budget', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  process.env['INPUT_EXECUTION-TIMEOUT-MINUTES'] = '2';
+  f.onDispatch = run => {
+    f.acquire(run);
+    run.status = run.job.status = 'in_progress';
+  };
+  f.onSleep = milliseconds => {
+    if (milliseconds === 60000) {
+      f.finish(f.runs[0], 'success');
+      f.runs[0].job.conclusion = null;
+    }
+  };
+  const start = f.now;
+  assert.equal(await f.run(), 1);
+  assert.equal(f.now - start, 135000);
+  assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+  assert.match(f.errors[0], /elapsed 60s\/60s.*confirmation timed out/);
+});
+
+test('completion never infers execution from workflow success alone', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  f.onDispatch = run => { run.status = 'completed'; run.conclusion = 'success'; };
+  assert.equal(await f.run(), 1);
+  assert.deepEqual(f.events, ['dispatch:100']);
+  assert.match(f.errors[0], /worker queued\/null.*confirmation timed out.*no workload retry/);
+  assert.ok(f.logs.every(line => !line.includes('runner acquired')));
+});
+
+test('even matching successful results require execution evidence', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  f.onDispatch = run => {
+    run.status = run.job.status = 'completed';
+    run.conclusion = run.job.conclusion = 'success';
+  };
+  assert.equal(await f.run(), 1);
+  assert.deepEqual(f.sleeps, [15000]);
+  assert.deepEqual(f.events, ['dispatch:100']);
+  assert.match(f.errors[0], /worker completed\/success; no workload retry/);
+});
+
+for (const policy of ['current', 'pinned-after-start']) {
+  test(`fast worker reveals execution only during completion reconciliation: ${policy}`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    process.env['INPUT_SOURCE-POLICY'] = policy;
+    f.onDispatch = run => { run.status = 'completed'; run.conclusion = 'success'; };
+    f.onSleep = milliseconds => {
+      if (milliseconds !== 5000) return;
+      f.finish(f.runs[0], 'success');
+      if (policy === 'pinned-after-start') f.source = 'c'.repeat(40);
+    };
+    assert.equal(await f.run(), 0);
+    assert.deepEqual(f.sleeps, [15000, 5000]);
+    assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+    assert.equal(f.logs.filter(line => line.includes('runner acquired')).length, 1);
+  });
+}
+
+test('pre-cancel allocation evidence survives a subsequent stale queued view', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  process.env['INPUT_EXECUTION-TIMEOUT-MINUTES'] = '5';
+  let jobReads = 0;
+  f.beforeRequest = request => {
+    if (request.route.endsWith('/jobs') && ++jobReads === 3) {
+      return Response.json({total_count: 1, jobs: [
+        {...f.runs[0].job, status: 'in_progress', runner_id: 123, runner_name: 'fake-runner'},
+      ]});
+    }
+  };
+  f.onSleep = milliseconds => {
+    if (milliseconds === 60000 && jobReads >= 4) f.finish(f.runs[0], 'success');
+  };
+  assert.equal(await f.run(), 0);
+  assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+  assert.equal(f.logs.filter(line => line.includes('runner acquired')).length, 1);
+});
+
+for (const conclusion of ['success', null, 'failure', 'cancelled']) {
+  test(`pre-cancel completed/${conclusion} is not discarded by a stale queued view`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    let runReads = 0;
+    f.beforeRequest = request => {
+      if (request.route === '/actions/runs/100' && request.method === 'GET' && ++runReads === 3) {
+        return Response.json({...f.runs[0], status: 'completed', conclusion});
+      }
+    };
+    f.onDispatch = run => {
+      if (run.id !== 100) f.finish(run, 'success');
+    };
+    f.onSleep = milliseconds => {
+      if (milliseconds === 5000) f.finish(f.runs[0], 'success');
+    };
+    const successful = conclusion === 'success' || conclusion === null;
+    assert.equal(await f.run(), successful ? 0 : 1);
+    assert.equal(f.runs.length, 1, 'Known completion must never trigger another candidate');
+    if (successful) {
+      assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+      assert.equal(f.errors.length, 0);
+    } else {
+      assert.match(f.errors[0], new RegExp(`Worker 100: ${conclusion};.*no workload retry`));
+    }
+  });
+}
+
+for (const [change, expected] of [
+  ['parent cancelled', /Parent run is no longer active/],
+  ['source changed', /Source ref changed/],
+  ['attempt changed', /identity mismatch/],
+  ['label changed', /selected runner label/],
+  ['worker failed', /worker completed\/failure/],
+  ['run cancelled', /run completed\/cancelled/],
+]) {
+  test(`completion wait stops when ${change}`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    f.onDispatch = run => { f.finish(run, 'success'); run.job.conclusion = null; };
+    f.onSleep = milliseconds => {
+      if (milliseconds !== 5000) return;
+      if (change === 'parent cancelled') Object.assign(f.parent, {status: 'completed', conclusion: 'cancelled'});
+      if (change === 'source changed') f.source = 'c'.repeat(40);
+      if (change === 'attempt changed') f.runs[0].run_attempt = 2;
+      if (change === 'label changed') f.runs[0].job.labels = ['unapproved'];
+      if (change === 'worker failed') f.runs[0].job.conclusion = 'failure';
+      if (change === 'run cancelled') f.runs[0].conclusion = 'cancelled';
+    };
+    assert.equal(await f.run(), 1);
+    assert.deepEqual(f.sleeps, [15000, 5000]);
+    assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+    assert.match(f.errors[0], expected);
+    assert.match(f.errors[0], /completion confirmation failed.*no workload retry/);
+  });
+}
+
+test('pinned trusted worker can finish reconciliation after its source advances', {timeout: 5000}, async t => {
+  const f = fixture(t, cpuRunners);
+  process.env['INPUT_SOURCE-POLICY'] = 'pinned-after-start';
+  f.onDispatch = run => { f.finish(run, 'success'); run.job.conclusion = null; };
+  f.onSleep = milliseconds => {
+    if (milliseconds === 5000) {
+      f.source = 'c'.repeat(40);
+      f.runs[0].job.conclusion = 'success';
+    }
+  };
+  assert.equal(await f.run(), 0);
+  assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+});
+
+test('completion observation changes do not renew the deadline', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  process.env['INPUT_EXECUTION-TIMEOUT-MINUTES'] = '5';
+  f.onDispatch = run => { f.finish(run, 'success'); run.job.conclusion = null; };
+  let polls = 0;
+  f.onSleep = milliseconds => {
+    if (milliseconds !== 5000) return;
+    Object.assign(f.runs[0], ++polls % 2 ? {status: 'in_progress', conclusion: null} :
+      {status: 'completed', conclusion: 'success'});
+  };
+  const start = f.now;
+  assert.equal(await f.run(), 1);
+  assert.equal(f.now - start, 135000);
+  assert.equal(f.runs.length, 1);
+  assert.match(f.errors[0], /confirmation timed out/);
+});
+
+for (const route of ['/actions/runs/7', '/commits/refs%2Fpull%2F1%2Fmerge',
+  '/actions/runs/100', '/actions/runs/100/attempts/1/jobs']) {
+  for (const delay of ['retry-after', 'late response']) {
+    test(`completion deadline covers ${delay} from ${route}`, {timeout: 5000}, async t => {
+      const f = fixture(t);
+      process.env['INPUT_EXECUTION-TIMEOUT-MINUTES'] = '5';
+      const start = f.now + 15000;
+      f.onDispatch = run => { f.finish(run, 'success'); run.job.conclusion = null; };
+      let delayed = 0;
+      f.beforeRequest = request => {
+        if (request.route !== route || f.now - start < 115000 || delayed) return;
+        delayed++;
+        if (delay === 'retry-after') return new Response('{}', {status: 429, headers: {'retry-after': '60'}});
+        f.now += 6000;
+        return Response.json(route.endsWith('/jobs') ? {total_count: 1, jobs: [f.runs[0].job]} :
+          route.includes('/commits/') ? {sha: f.source} : route === '/actions/runs/7' ? f.parent : f.runs[0]);
+      };
+      assert.equal(await f.run(), 1);
+      assert.equal(f.now - start, delay === 'retry-after' ? 115000 : 121000);
+      assert.equal(delayed, 1);
+      assert.equal(f.runs.length, 1);
+      assert.match(f.errors[0], /completion confirmation failed.*request deadline exhausted.*no workload retry/);
+    });
+  }
+}
+
+for (const status of [403, 404, 503]) {
+  test(`completion reports HTTP ${status} without redispatch`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    f.onDispatch = run => { f.finish(run, 'success'); run.job.conclusion = null; };
+    f.beforeRequest = request => {
+      if (request.route.endsWith('/jobs') && f.sleeps.includes(5000)) return new Response('{}', {status});
+    };
+    assert.equal(await f.run(), 1);
+    assert.deepEqual(f.events, ['dispatch:100', 'completed:100:success']);
+    assert.match(f.errors[0], new RegExp(`completion confirmation failed.*HTTP ${status}.*no workload retry`));
+  });
+}
+
 for (const entry of ['../index', '../guard/index']) {
   const caller = entry === '../index' ? 'coordinator' : 'worker guard';
   for (const status of ['queued', 'requested', 'pending', 'HTTP 404']) {
@@ -527,6 +795,28 @@ for (const status of ['queued', 'in_progress']) {
   });
 }
 
+for (const conclusion of ['success', 'failure', 'timed_out', 'skipped', undefined, '', null, 'cancelled']) {
+  test(`queue cancellation preserves initial result ${String(conclusion)} before a cancelled view`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    let runReads = 0;
+    f.beforeRequest = request => {
+      if (request.route === '/actions/runs/100' && request.method === 'GET' && ++runReads === 4) {
+        f.finish(f.runs[0], 'cancelled');
+        return Response.json({...f.runs[0], conclusion});
+      }
+    };
+    f.onDispatch = run => { if (run.id === 101) f.finish(run, 'success'); };
+    const allowed = conclusion === null || conclusion === 'cancelled';
+    assert.equal(await f.run(), allowed ? 0 : 1);
+    assert.equal(f.runs.length, allowed ? 2 : 1);
+    assert.ok(!f.events.some(event => event.startsWith('cancel:')));
+    if (!allowed) {
+      assert.match(f.errors[0], /Queue cancellation observed a non-cancelled or invalid result; no fallback/);
+      assert.ok(f.errors[0].includes(`run completed/${String(conclusion)}`));
+    }
+  });
+}
+
 test('fallback waits for cancellation completion before dispatching the next pool', {timeout: 5000}, async t => {
   const f = fixture(t);
   let cancelAt;
@@ -750,7 +1040,7 @@ for (const hasJobId of [true, false]) {
     assert.equal(f.logs.at(-1), hasJobId
       ? `View worker job logs here: ${url}/job/1000`
       : `Job link unavailable; view worker run here: ${url}`);
-    assert.match(f.errors.join('\n'), /Worker 100: failure; no workload retry/);
+    assert.match(f.errors.join('\n'), /Worker 100: failure; worker completed\/failure; no workload retry/);
     assert.equal(f.runs.length, 1);
     assert.equal(f.state(), null);
   });
@@ -1050,6 +1340,52 @@ test('post cleanup with unknown run ID cancels only the matching request', {time
   assert.equal(await f.run('../cleanup'), 0);
   assert.equal(f.runs[0].status, 'queued');
   assert.deepEqual(f.events, ['cancel:101', 'completed:101:cancelled']);
+});
+
+for (const stage of ['unknown-run lookup', 'initial run lookup', 'cancel request', 'cancellation polling']) {
+  test(`post cleanup bounds retry delays during ${stage}`, {timeout: 5000}, async t => {
+    const f = fixture(t);
+    const active = {workflow: 'runner-worker.yml', request: 'runner-7-1-lost', created: new Date(f.now).toISOString()};
+    if (stage !== 'unknown-run lookup') active.id = 100;
+    f.runs.push({id: 100, display_title: active.request, status: 'queued', job: {status: 'queued'}});
+    f.onCancel = () => {};
+    let delayed = 0;
+    f.beforeRequest = request => {
+      const target = stage === 'unknown-run lookup' ? request.route.endsWith('/runs') :
+        stage === 'cancel request' ? request.route.endsWith('/cancel') :
+          request.route === '/actions/runs/100' &&
+          (stage === 'initial run lookup' || f.events.includes('cancel:100'));
+      if (!target) return;
+      delayed++;
+      f.now += 5000;
+      return new Response('{}', {status: 429, headers: {'retry-after': '60'}});
+    };
+    process.env.STATE_active = JSON.stringify(active);
+    const start = f.now;
+    assert.equal(await f.run('../cleanup'), 1);
+    assert.equal(f.now - start, 70000);
+    assert.equal(delayed, 2);
+    assert.match(f.errors[0], /request deadline exhausted/);
+    assert.ok(f.events.every(event => !event.startsWith('dispatch:')));
+    if (stage === 'unknown-run lookup') assert.match(f.errors[0], /Dispatch outcome unknown for runner-7-1-lost/);
+  });
+}
+
+test('unknown-run discovery and cancellation share one cleanup deadline', {timeout: 5000}, async t => {
+  const f = fixture(t);
+  const active = {workflow: 'runner-worker.yml', request: 'runner-7-1-lost', created: new Date(f.now).toISOString()};
+  f.runs.push({id: 100, display_title: active.request, status: 'queued', conclusion: null, job: {status: 'queued'}});
+  f.onCancel = () => {};
+  f.beforeRequest = request => {
+    if (request.route === '/actions/workflows/runner-worker.yml/runs') f.now += 115000;
+    if (request.route === '/actions/runs/100' && f.events.includes('cancel:100')) f.now += 6000;
+  };
+  process.env.STATE_active = JSON.stringify(active);
+  const start = f.now;
+  assert.equal(await f.run('../cleanup'), 1);
+  assert.equal(f.now - start, 121000);
+  assert.deepEqual(f.events, ['cancel:100']);
+  assert.match(f.errors[0], /Cancellation unconfirmed.*5s confirmation window.*request deadline exhausted/);
 });
 
 test('GET rate limiting backs off while keeping dispatch single-shot', {timeout: 5000}, async t => {
