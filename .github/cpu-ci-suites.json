@@ -39,6 +39,12 @@
       "exclude_paths": ["**/*.md"],
       "jobs": ["shimpler"]
     },
+    "sonar-check": {
+      "enabled": true,
+      "comment": "Sonar script security, collection and reporting tests; service APIs are mocked.",
+      "paths": ["sonar-check/", ".github/image-builds.json"],
+      "jobs": ["sonar-check"]
+    },
     "spark-home": {
       "enabled": true,
       "comment": "Existing Spark-home dependency-tool unit tests.",

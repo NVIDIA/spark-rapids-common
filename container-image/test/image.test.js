@@ -146,6 +146,7 @@ test('publication isolates credentials and promotes the verified digest after ev
     assert.equal(fs.existsSync(event.directory), false);
   }
   assert.match(result.summary, /Published ghcr.io\/example\/consumer\/toolchain:test/);
+  assert.doesNotMatch(result.summary, /Aliases:/);
   assert.equal(result.outputs,
     `image=ghcr.io/example/consumer/toolchain\ndigest=${digest}\nreference=${reference}\n`);
 });
@@ -157,6 +158,39 @@ test('publication appends outputs without replacing existing step outputs', t =>
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.outputs,
     `existing=value\nimage=ghcr.io/example/consumer/toolchain\ndigest=${digest}\nreference=${reference}\n`);
+});
+
+test('aliases share one verified build and one promotion command', t => {
+  const f = fixture(t);
+  f.config.aliases = ['main', 'Main', '_preview', 'v1.2-rc.1', 'v'.repeat(128)];
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(builds(result).length, 1);
+  assert.equal(pulls(result).length, 2);
+  assert.equal(smokes(result).length, 2);
+  assert.equal(promotions(result).length, 1);
+  assert.equal(result.docker.at(-1), promotions(result)[0]);
+  assert.deepEqual(promotions(result)[0].args, [
+    'buildx', 'imagetools', 'create', '--prefer-index=false',
+    '--tag', consumerTag,
+    ...f.config.aliases.flatMap(tag => ['--tag', `ghcr.io/example/consumer/toolchain:${tag}`]),
+    reference,
+  ]);
+  assert.ok(result.summary.includes(`Aliases: ${f.config.aliases.join(' ')}\n`));
+  assert.equal(result.outputs,
+    `image=ghcr.io/example/consumer/toolchain\ndigest=${digest}\nreference=${reference}\n`);
+});
+
+test('an empty aliases array preserves primary-tag publication', t => {
+  const f = fixture(t);
+  f.config.aliases = [];
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(promotions(result)[0].args, [
+    'buildx', 'imagetools', 'create', '--prefer-index=false',
+    '--tag', consumerTag, reference,
+  ]);
+  assert.doesNotMatch(result.summary, /Aliases:/);
 });
 
 test('explicit Buildx and TLS paths are preserved', t => {
@@ -186,8 +220,9 @@ test('same-run image variants publish distinct candidates and promote only their
     'matrix jobs share SHA/run/attempt, not candidate tags');
 });
 
-test('validation builds and checks each platform without credentials or registry operations', t => {
+test('validation with aliases checks each platform without credentials or registry operations', t => {
   const f = fixture(t);
+  f.config.aliases = ['main', 'stable'];
   const result = f.run({PUBLISH_IMAGE: 'false', GHCR_USER: '', GHCR_TOKEN: ''});
   assert.equal(result.status, 0, result.stderr);
   assert.equal(builds(result).length, 2);
@@ -224,8 +259,10 @@ test('delayed anonymous visibility retries only reads before one promotion', t =
 
 for (const failure of ['build', 'missing-metadata', 'bad-digest', 'pull-arm64',
   'pull-timeout', 'smoke-arm64']) {
-  test(failure + ' fails without promoting the consumer tag or leaking credentials', t => {
-    const result = fixture(t).run({MOCK_FAILURE: failure});
+  test(failure + ' fails without promoting any consumer tags or leaking credentials', t => {
+    const f = fixture(t);
+    f.config.aliases = ['main', 'stable'];
+    const result = f.run({MOCK_FAILURE: failure});
     assert.notEqual(result.status, 0);
     assert.equal(builds(result).length, 1, 'builds/pushes are never retried');
     assert.equal(promotions(result).length, 0);
@@ -239,10 +276,45 @@ for (const failure of ['build', 'missing-metadata', 'bad-digest', 'pull-arm64',
 }
 
 test('promotion failure is reported without retrying a registry mutation', t => {
-  const result = fixture(t).run({MOCK_FAILURE: 'promotion'});
+  const f = fixture(t);
+  f.config.aliases = ['main', 'stable'];
+  const result = f.run({MOCK_FAILURE: 'promotion'});
   assert.equal(result.status, 45);
+  assert.equal(builds(result).length, 1);
+  assert.equal(smokes(result).length, 2);
   assert.equal(promotions(result).length, 1);
+  assert.deepEqual(promotions(result)[0].args, [
+    'buildx', 'imagetools', 'create', '--prefer-index=false',
+    '--tag', consumerTag,
+    '--tag', 'ghcr.io/example/consumer/toolchain:main',
+    '--tag', 'ghcr.io/example/consumer/toolchain:stable',
+    reference,
+  ]);
   assert.doesNotMatch(result.summary, /Published/);
+});
+
+test('invalid aliases fail before invoking Docker', t => {
+  const f = fixture(t);
+  const invalidAliases = [
+    null, false, true, 'main', {}, [42], [null], [''], [' main'], ['main '],
+    ['main\n'], ['\nmain'], ['main\t'], ['main\u0000'], ['main\u007f'],
+    ['-main'], ['.main'], ['a/b'], ['x:y'], ['café'], ['v'.repeat(129)],
+    ['main', 'main'], [f.config.tag], ['main', f.config.tag],
+  ];
+  for (const aliases of invalidAliases) {
+    const result = f.run({IMAGE_CONFIG: JSON.stringify({...f.config, aliases})});
+    assert.notEqual(result.status, 0, JSON.stringify(aliases));
+    assert.equal(result.events.length, 0);
+  }
+});
+
+test('aliases do not replace the required primary tag', t => {
+  const f = fixture(t);
+  delete f.config.tag;
+  f.config.aliases = ['main'];
+  const result = f.run();
+  assert.notEqual(result.status, 0);
+  assert.equal(result.events.length, 0);
 });
 
 test('invalid configuration fails before invoking Docker', t => {
@@ -357,7 +429,12 @@ test('daily image catalog works through the shared publisher without queue dispa
     assert.equal(result.status, 0, result.stderr);
     assert.equal(builds(result).length, 1);
     assert.equal(smokes(result).length, entry.platforms.length);
-    assert.equal(promotions(result)[0].args.at(-2), `ghcr.io/example/consumer/${image}:${entry.tag}`);
+    assert.deepEqual(promotions(result)[0].args, [
+      'buildx', 'imagetools', 'create', '--prefer-index=false',
+      ...[entry.tag, ...(entry.aliases ?? [])].flatMap(tag =>
+        ['--tag', `ghcr.io/example/consumer/${image}:${tag}`]),
+      `ghcr.io/example/consumer/${image}@${digest}`,
+    ]);
     assert.ok(!builds(result)[0].args.includes('--cache-from'));
     assert.ok(!builds(result)[0].args.includes('--cache-to'));
   }

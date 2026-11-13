@@ -1,0 +1,76 @@
+# Copyright (c) 2026, NVIDIA CORPORATION.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Report Sonar check
+description: Publish exact-analysis Sonar evidence to its commit and pull request
+inputs:
+  phase:
+    description: Set the scoped status pending before scanning, or publish the final report
+    default: report
+  result-path:
+    description: Required for phase report; path to the schema 2 JSON result from the collector
+  pr-number:
+    description: Pull request in the current repository
+    required: true
+  sha:
+    description: Full analyzed commit SHA
+    required: true
+  base-ref:
+    description: Approved target branch supplied to the scanner and collector
+    required: true
+  source-attempt:
+    description: Required for phase report; producer run attempt, including reporter-only reruns
+  scan-result:
+    description: Required for phase report; scan job result (success, failure, cancelled, or skipped)
+  sonar-url:
+    description: Expected HTTPS Sonar server base URL, including any context path
+    required: true
+  project:
+    description: Expected Sonar project key
+    required: true
+  github-token:
+    description: Default workflow token or user token with pull-requests write and statuses write permissions
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - name: Publish Sonar summary and commit status
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        SONAR_REPORT_ACTION_PATH: ${{ github.action_path }}
+        SONAR_REPORT_PHASE: ${{ inputs.phase }}
+        SONAR_RESULT_PATH: ${{ inputs.result-path }}
+        SONAR_PR_NUMBER: ${{ inputs.pr-number }}
+        SONAR_SHA: ${{ inputs.sha }}
+        SONAR_BASE_REF: ${{ inputs.base-ref }}
+        SONAR_SOURCE_ATTEMPT: ${{ inputs.source-attempt }}
+        SONAR_SCAN_RESULT: ${{ inputs.scan-result }}
+        SONAR_URL: ${{ inputs.sonar-url }}
+        SONAR_PROJECT_KEY: ${{ inputs.project }}
+        SONAR_REPORT_ACTIONS_TOKEN: ${{ inputs.github-token == github.token }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        debug: false
+        # A timed-out write may already have succeeded.
+        retries: 0
+        script: |
+          const { report, optionsFromEnv } = require(
+            require('node:path').join(process.env.SONAR_REPORT_ACTION_PATH, '..', 'report.js'),
+          );
+          await report({
+            github,
+            core,
+            context,
+            options: optionsFromEnv(process.env),
+          });
