@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright (c) 2024, NVIDIA CORPORATION.
+# Copyright (c) 2024-2026, NVIDIA CORPORATION.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -48,7 +48,7 @@ AUTH_HEADERS = {
 def create():
     url = f'{API_URL}/repos/{OWNER}/{REPO_NAME}/pulls'
     params = {
-        'title': f'[auto-merge] {HEAD} to {BASE} [skip ci] [bot]',
+        'title': f'[auto-merge] {HEAD} to {BASE} [bot]',
         'head': HEAD,
         'base': BASE,
         'body': f'auto-merge triggered by github actions on `{HEAD}` to create a PR keeping `{BASE}` up-to-date. If '
