@@ -79,16 +79,16 @@ Require `needs: [approve, security]` and
 
 ## Image maintenance
 
-The Dockerfile uses the public upstream `malcontent:latest` image. The existing
+The Dockerfile pins the public upstream Malcontent image by digest. The
 daily publisher builds `sonar-script-scan` from `.github/image-builds.json` for
 AMD64, checks the binary's version against the engine version declared
 in the Dockerfile label and runs real fixtures, then promotes the version tag and
 stable `main` alias to the same anonymously verified image.
 The same catalog includes it in existing image cleanup. The first publication
-must finish before enabling consumers. An unsupported upstream version fails the
-smoke checks before promotion; update the catalog version tag and Dockerfile's
-engine-version label together. Keep contract `1` only while the scanner's JSON
-report and rule behavior remain compatible with existing action revisions;
+must finish before enabling consumers. To upgrade the engine, update the base
+digest, Dockerfile engine-version label, and catalog version tag together.
+Keep contract `1` only while the scanner's JSON report and rule behavior
+remain compatible with existing action revisions;
 validate those revisions when upgrading the engine. An incompatible contract
 needs a consumer migration before replacing `main`. The consumer alias stays
 `main`.
