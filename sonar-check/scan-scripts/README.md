@@ -87,11 +87,10 @@ stable `main` alias to the same anonymously verified image.
 The same catalog includes it in existing image cleanup. The first publication
 must finish before enabling consumers. To upgrade the engine, update the base
 digest, Dockerfile engine-version label, and catalog version tag together.
-Keep contract `1` only while the scanner's JSON report and rule behavior
-remain compatible with existing action revisions;
-validate those revisions when upgrading the engine. An incompatible contract
-needs a consumer migration before replacing `main`. The consumer alias stays
-`main`.
+Keep `main` compatible with contract `1`: test the candidate with the pinned
+consumer action before promotion. Consumers using the default image do not need
+to update their workflows for a new engine version or base digest. Publish any
+incompatible contract under a separate alias; do not move `main` to it.
 
 CPU CI builds the proposed Dockerfile locally and tests that image before merge;
 it never publishes PR images. The publisher's `smoke-test.sh` reuses those fixtures.

@@ -1158,7 +1158,8 @@ class RealImageTests(GitFixture):
                 timeout=30,
             )
         )
-        advertised_version = metadata["Config"]["Labels"][scanner.SCANNER_VERSION_LABEL]
+        cls.labels = metadata["Config"]["Labels"]
+        advertised_version = cls.labels[scanner.SCANNER_VERSION_LABEL]
         version = subprocess.check_output(
             [
                 *docker,
@@ -1190,6 +1191,16 @@ class RealImageTests(GitFixture):
                 f"Scanner version mismatch: expected {expected!r} from the image label, "
                 f"got {version!r} from /usr/bin/mal --version"
             )
+
+    def test_publisher_preserves_main_for_pinned_consumers(self):
+        repository = Path(__file__).resolve().parents[2]
+        catalog = json.loads((repository / ".github/image-builds.json").read_text())
+        recipe = catalog["sonar-script-scan"]
+        self.assertIn("main", recipe["aliases"])
+        self.assertEqual(self.labels["com.nvidia.script-scan.contract"], "1")
+        self.assertEqual(
+            recipe["tag"], "malcontent-" + self.labels[scanner.SCANNER_VERSION_LABEL]
+        )
 
     def audit(self):
         workdir = self.root / "work"

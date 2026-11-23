@@ -11,7 +11,7 @@
     "dockerfile": "sonar-check/scan-scripts/Dockerfile",
     "recipe-inputs": ["sonar-check/scan-scripts/.dockerignore"],
     "platforms": ["linux/amd64"],
-    "tag": "malcontent-1.28.1",
+    "tag": "malcontent-1.28.2",
     "aliases": ["main"],
     "smoke-test": "sonar-check/scan-scripts/smoke-test.sh"
   }
