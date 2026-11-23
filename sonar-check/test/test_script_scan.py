@@ -570,6 +570,10 @@ class DockerTests(unittest.TestCase):
         self.snapshot.mkdir()
         self.prefix = ["docker", "--host", "unix:///test.sock"]
 
+    def test_scanner_base_is_pinned_by_digest(self):
+        recipe = Path(__file__).resolve().parents[1] / "scan-scripts" / "Dockerfile"
+        self.assertRegex(recipe.read_text(), r"(?m)^FROM \S+@sha256:[0-9a-f]{64}$")
+
     def test_docker_config_and_endpoint_are_not_taken_from_the_checkout_environment(
         self,
     ):
@@ -727,10 +731,11 @@ class DockerTests(unittest.TestCase):
                             RealImageTests.setUpClass.__func__(probe)
                             self.assertEqual(probe.image, IMAGE_ID)
                         else:
-                            with self.assertRaisesRegex(
-                                AssertionError, "declared engine version"
-                            ):
+                            with self.assertRaises(AssertionError) as caught:
                                 RealImageTests.setUpClass.__func__(probe)
+                            message = str(caught.exception)
+                            self.assertIn(f"expected 'malcontent version v{advertised}'", message)
+                            self.assertIn(f"got 'malcontent version v{actual}'", message)
 
     def test_malformed_references_and_unsupported_platforms_fail_before_docker(self):
         for reference in (
@@ -1153,7 +1158,8 @@ class RealImageTests(GitFixture):
                 timeout=30,
             )
         )
-        advertised_version = metadata["Config"]["Labels"][scanner.SCANNER_VERSION_LABEL]
+        cls.labels = metadata["Config"]["Labels"]
+        advertised_version = cls.labels[scanner.SCANNER_VERSION_LABEL]
         version = subprocess.check_output(
             [
                 *docker,
@@ -1179,10 +1185,22 @@ class RealImageTests(GitFixture):
             text=True,
             timeout=30,
         ).strip()
-        if version != f"malcontent version v{advertised_version}":
+        expected = f"malcontent version v{advertised_version}"
+        if version != expected:
             raise AssertionError(
-                "Built image scanner version does not match its declared engine version"
+                f"Scanner version mismatch: expected {expected!r} from the image label, "
+                f"got {version!r} from /usr/bin/mal --version"
             )
+
+    def test_publisher_preserves_main_for_pinned_consumers(self):
+        repository = Path(__file__).resolve().parents[2]
+        catalog = json.loads((repository / ".github/image-builds.json").read_text())
+        recipe = catalog["sonar-script-scan"]
+        self.assertIn("main", recipe["aliases"])
+        self.assertEqual(self.labels["com.nvidia.script-scan.contract"], "1")
+        self.assertEqual(
+            recipe["tag"], "malcontent-" + self.labels[scanner.SCANNER_VERSION_LABEL]
+        )
 
     def audit(self):
         workdir = self.root / "work"

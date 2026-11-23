@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Malcontent 1.28.1 includes its scanner and YARA rules for offline use.
-FROM cgr.dev/chainguard/malcontent:latest
+# Malcontent 1.28.2 includes its scanner and YARA rules for offline use.
+FROM cgr.dev/chainguard/malcontent@sha256:aae6bffb891fb8118586a243c43ed79c3e0b418d1cc4258c7af5f0681d3ce9c4
 
 LABEL org.opencontainers.image.source="https://github.com/NVIDIA/spark-rapids-common" \
       com.nvidia.script-scan.contract="1" \
-      com.nvidia.script-scan.scanner-version="1.28.1"
+      com.nvidia.script-scan.scanner-version="1.28.2"
 
 USER 65532:65532
 ENTRYPOINT ["/usr/bin/mal"]
