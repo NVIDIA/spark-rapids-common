@@ -696,7 +696,8 @@ for (const [change, reason] of [
     assert.equal(f.failures[0], `Sonar failed: ${reason}.`);
     assert.doesNotMatch(f.comments[0].body, /policy, or target branch verification/);
     assert.equal(f.jobSummaries.length, 1);
-    assert.match(f.jobSummaries[0], /Re-run all jobs/);
+    assert.match(f.jobSummaries[0], /Code changed:.*new commit.*`\/ok to test <new-sha>`/);
+    assert.match(f.jobSummaries[0], /No code change:.*choose \*\*Re-run all jobs\*\*.*same commit/);
     assert.match(f.jobSummaries[0], /Re-run failed jobs\*\* reuses the previous scan result/);
     assert.ok(f.comments[0].body.includes(f.jobSummaries[0]));
   });

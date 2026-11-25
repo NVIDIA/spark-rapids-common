@@ -659,9 +659,10 @@ async function report({ github, core, context, options }) {
       } else if (commentEligible) {
         const stale = pr.head.sha.toLowerCase() !== target.sha;
         const rescanHint = !passed && !stale && pr.state === 'open' && options.scanResult === 'success'
-          ? 'If you resolved the findings in SonarQube without changing code, rerun the Sonar analysis job ' +
-            'or choose **Re-run all jobs**. **Re-run failed jobs** reuses the previous scan result. ' +
-            'No new commit or upmerge is needed.'
+          ? '- **Code changed:** Push the fix and trigger CI for the new commit ' +
+            '(for example, `/ok to test <new-sha>`).\n' +
+            '- **No code change:** After resolving the findings in SonarQube, choose **Re-run all jobs** ' +
+            'in the Sonar workflow to rescan the same commit. **Re-run failed jobs** reuses the previous scan result.'
           : '';
         const marker = `<!-- sonar-check:${target.repository}:${target.pr}:${target.runId}:${options.sourceAttempt}:${scope.scopeId} -->`;
         const body = summary(
