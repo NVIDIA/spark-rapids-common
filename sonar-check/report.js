@@ -368,7 +368,7 @@ function failureMessage(reason, failure) {
   }
 }
 
-function summary(target, options, evidence, passed, stale, marker, reason) {
+function summary(target, options, evidence, passed, stale, marker, reason, rescanHint) {
   const run = `${target.server}/${target.repository}/actions/runs/${target.runId}`;
   const scanUrl = `${run}/attempts/${options.sourceAttempt}`;
   const reportUrl = `${run}/attempts/${target.runAttempt}`;
@@ -391,6 +391,9 @@ function summary(target, options, evidence, passed, stale, marker, reason) {
         `new Blocker: **${evidence.blocker}**.`,
       '',
     );
+    if (rescanHint) {
+      lines.push(rescanHint, '');
+    }
     if (evidence.detailsComplete) {
       lines.push(
         `Current PR findings: **${evidence.totalIssues}** (collected at ${evidence.detailsCapturedAt}).`,
@@ -654,18 +657,32 @@ async function report({ github, core, context, options }) {
       if (retargeted) {
         reason = 'target branch changed; rerun scan';
       } else if (commentEligible) {
+        const stale = pr.head.sha.toLowerCase() !== target.sha;
+        const rescanHint = !passed && !stale && options.scanResult === 'success'
+          ? 'If you resolved the findings in SonarQube without changing code, rerun the Sonar analysis job ' +
+            'or choose **Re-run all jobs**. **Re-run failed jobs** reuses the previous scan result. ' +
+            'No new commit or upmerge is needed.'
+          : '';
         const marker = `<!-- sonar-check:${target.repository}:${target.pr}:${target.runId}:${options.sourceAttempt}:${scope.scopeId} -->`;
         const body = summary(
           target,
           options,
           evidence,
           passed,
-          pr.head.sha.toLowerCase() !== target.sha,
+          stale,
           marker,
           reason,
+          rescanHint,
         );
         await publishComment(github, target, body, marker, options.actionsToken === true);
         published = true;
+        if (rescanHint) {
+          try {
+            await core.summary.addRaw(rescanHint).write();
+          } catch {
+            core.warning('Could not write rescan guidance to the job summary; see the PR comment.');
+          }
+        }
       }
     } catch {
       passed = false;
