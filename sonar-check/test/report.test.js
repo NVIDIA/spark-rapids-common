@@ -96,6 +96,7 @@ function fixture(t, evidence = result()) {
     calls: [],
     warnings: [],
     failures: [],
+    jobSummaries: [],
     handlers: {},
     context: {
       repo: {
@@ -121,6 +122,7 @@ function fixture(t, evidence = result()) {
   f.core = {
     warning: message => f.warnings.push(message),
     setFailed: message => f.failures.push(message),
+    summary: { addRaw: message => ({ write: async () => f.jobSummaries.push(message) }) },
   };
   const api = (name, operation) => async args => {
     assert.equal(args.request.timeout, 30000);
@@ -139,6 +141,7 @@ function fixture(t, evidence = result()) {
         get: api('pull', () => ({
           data: {
             number: 7,
+            state: 'open',
             base: { ref: baseRef, repo: { full_name: repository } },
             head: { sha },
           },
@@ -692,6 +695,11 @@ for (const [change, reason] of [
     assert.ok(f.comments[0].body.includes(`**Sonar check: FAIL — ${reason}.**`));
     assert.equal(f.failures[0], `Sonar failed: ${reason}.`);
     assert.doesNotMatch(f.comments[0].body, /policy, or target branch verification/);
+    assert.equal(f.jobSummaries.length, 1);
+    assert.match(f.jobSummaries[0], /Code changed:.*new commit.*`\/ok to test <new-sha>`/);
+    assert.match(f.jobSummaries[0], /No code change:.*choose \*\*Re-run all jobs\*\*.*same commit/);
+    assert.match(f.jobSummaries[0], /Re-run failed jobs\*\* reuses the previous scan result/);
+    assert.ok(f.comments[0].body.includes(f.jobSummaries[0]));
   });
 }
 
@@ -702,6 +710,7 @@ for (const scanResult of ['failure', 'cancelled', 'skipped']) {
     assert.equal((await f.run()).passed, false);
     assert.equal(f.statuses()[0].state, 'failure');
     assertNoCommentCalls(f);
+    assert.deepEqual(f.jobSummaries, []);
     assert.match(f.failures[0], /rerun/i);
   });
 }
@@ -743,6 +752,8 @@ test('verified High findings explain a failed scanner without listing unrelated 
   assert.equal(f.statuses()[0].description, 'Sonar failed: 1 High, 0 Blocker issues.');
   assert.match(f.comments[0].body, /Sonar check: FAIL — 1 High, 0 Blocker issues/);
   assert.doesNotMatch(f.comments[0].body, /scan job failed|publication failed|verification did not pass/);
+  assert.doesNotMatch(f.comments[0].body, /Re-run failed jobs/);
+  assert.deepEqual(f.jobSummaries, []);
 });
 
 for (const [scanResult, reason] of [
@@ -966,6 +977,8 @@ test('medium findings receive a passing summary explaining their non-blocking ou
   assert.ok(f.comments[0].body.startsWith(marker + '\n'));
   assert.match(f.comments[0].body, /\*\*Sonar check: PASS\*\*/);
   assert.doesNotMatch(f.comments[0].body, /Sonar check: FAIL|Sonar failed:/);
+  assert.doesNotMatch(f.comments[0].body, /Re-run failed jobs/);
+  assert.deepEqual(f.jobSummaries, []);
   assert.match(f.comments[0].body, /MEDIUM MAINTAINABILITY/);
   assert.match(f.comments[0].body, /Medium findings alone do not fail/);
   assert.match(f.comments[0].body, /project\/issues\?id=project-key&pullRequest=7&open=issue-key/);
@@ -985,6 +998,55 @@ test('report retry consumes the required original source attempt and updates its
   assert.match(f.comments[0].body, /\[Report retry\].*attempts\/2/);
   assert.ok(f.comments[0].body.startsWith(marker + '\n'));
 });
+
+test('retry after triage still explains the original failed scan unless the head changed', async t => {
+  const f = fixture(t, result({ passed: false, gateStatus: 'ERROR', high: 6 }));
+  f.context.runAttempt = 2;
+  assert.equal((await f.run()).passed, false);
+  assert.match(f.comments[0].body, /Re-run failed jobs/);
+  assert.match(f.comments[0].body, /\[Scan run\].*attempts\/1/);
+  f.handlers.pull = () => ({
+    data: {
+      number: 7,
+      state: 'open',
+      base: { ref: baseRef, repo: { full_name: repository } },
+      head: { sha: 'b'.repeat(40) },
+    },
+  });
+  await f.run();
+  assert.match(f.comments[0].body, /PR head has since changed/);
+  assert.doesNotMatch(f.comments[0].body, /Re-run failed jobs/);
+  assert.equal(f.jobSummaries.length, 1);
+});
+
+test('closed PR keeps the failed report and status without suggesting a rescan', async t => {
+  const f = fixture(t, result({ passed: false, high: 6 }));
+  f.handlers.pull = () => ({
+    data: {
+      number: 7,
+      state: 'closed',
+      base: { ref: baseRef, repo: { full_name: repository } },
+      head: { sha },
+    },
+  });
+  assert.deepEqual(await f.run(), { passed: false, published: true, statusPublished: true });
+  assert.doesNotMatch(f.comments[0].body, /Re-run failed jobs/);
+  assert.deepEqual(f.jobSummaries, []);
+  assert.equal(f.statuses()[0].description, 'Sonar failed: 6 High, 0 Blocker issues.');
+});
+
+for (const [name, summary] of [
+  ['missing job summary API', undefined],
+  ['rejected job summary write', { addRaw: () => ({ write: () => Promise.reject(new Error('write failed')) }) }],
+]) {
+  test(`${name} preserves the findings comment and quality-gate reason`, async t => {
+    const f = fixture(t, result({ passed: false, high: 6 }));
+    f.core.summary = summary;
+    assert.deepEqual(await f.run(), { passed: false, published: true, statusPublished: true });
+    assert.match(f.comments[0].body, /Re-run failed jobs/);
+    assert.equal(f.statuses()[0].description, 'Sonar failed: 6 High, 0 Blocker issues.');
+  });
+}
 
 test('stale PR head is annotated and status remains on analyzed SHA', async t => {
   const f = fixture(t, result({ totalIssues: 1, issues: [issue()] }));
