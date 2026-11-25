@@ -141,6 +141,7 @@ function fixture(t, evidence = result()) {
         get: api('pull', () => ({
           data: {
             number: 7,
+            state: 'open',
             base: { ref: baseRef, repo: { full_name: repository } },
             head: { sha },
           },
@@ -1004,7 +1005,12 @@ test('retry after triage still explains the original failed scan unless the head
   assert.match(f.comments[0].body, /Re-run failed jobs/);
   assert.match(f.comments[0].body, /\[Scan run\].*attempts\/1/);
   f.handlers.pull = () => ({
-    data: { number: 7, base: { ref: baseRef, repo: { full_name: repository } }, head: { sha: 'b'.repeat(40) } },
+    data: {
+      number: 7,
+      state: 'open',
+      base: { ref: baseRef, repo: { full_name: repository } },
+      head: { sha: 'b'.repeat(40) },
+    },
   });
   await f.run();
   assert.match(f.comments[0].body, /PR head has since changed/);
@@ -1012,13 +1018,34 @@ test('retry after triage still explains the original failed scan unless the head
   assert.equal(f.jobSummaries.length, 1);
 });
 
-test('a job summary write error preserves the findings comment and quality-gate reason', async t => {
+test('closed PR keeps the failed report and status without suggesting a rescan', async t => {
   const f = fixture(t, result({ passed: false, high: 6 }));
-  f.core.summary.addRaw = () => { throw new Error('job summary unavailable'); };
+  f.handlers.pull = () => ({
+    data: {
+      number: 7,
+      state: 'closed',
+      base: { ref: baseRef, repo: { full_name: repository } },
+      head: { sha },
+    },
+  });
   assert.deepEqual(await f.run(), { passed: false, published: true, statusPublished: true });
-  assert.match(f.comments[0].body, /Re-run failed jobs/);
+  assert.doesNotMatch(f.comments[0].body, /Re-run failed jobs/);
+  assert.deepEqual(f.jobSummaries, []);
   assert.equal(f.statuses()[0].description, 'Sonar failed: 6 High, 0 Blocker issues.');
 });
+
+for (const [name, summary] of [
+  ['missing job summary API', undefined],
+  ['rejected job summary write', { addRaw: () => ({ write: () => Promise.reject(new Error('write failed')) }) }],
+]) {
+  test(`${name} preserves the findings comment and quality-gate reason`, async t => {
+    const f = fixture(t, result({ passed: false, high: 6 }));
+    f.core.summary = summary;
+    assert.deepEqual(await f.run(), { passed: false, published: true, statusPublished: true });
+    assert.match(f.comments[0].body, /Re-run failed jobs/);
+    assert.equal(f.statuses()[0].description, 'Sonar failed: 6 High, 0 Blocker issues.');
+  });
+}
 
 test('stale PR head is annotated and status remains on analyzed SHA', async t => {
   const f = fixture(t, result({ totalIssues: 1, issues: [issue()] }));

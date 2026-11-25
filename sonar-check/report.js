@@ -658,7 +658,7 @@ async function report({ github, core, context, options }) {
         reason = 'target branch changed; rerun scan';
       } else if (commentEligible) {
         const stale = pr.head.sha.toLowerCase() !== target.sha;
-        const rescanHint = !passed && !stale && options.scanResult === 'success'
+        const rescanHint = !passed && !stale && pr.state === 'open' && options.scanResult === 'success'
           ? 'If you resolved the findings in SonarQube without changing code, rerun the Sonar analysis job ' +
             'or choose **Re-run all jobs**. **Re-run failed jobs** reuses the previous scan result. ' +
             'No new commit or upmerge is needed.'
