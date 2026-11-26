@@ -17,6 +17,7 @@ jobs:
     steps:
       - name: Install the pinned CLI
         id: install
+        if: github.event.created
         continue-on-error: true
         run: npm install --prefix "$RUNNER_TEMP/probe-cli" @github/copilot@1.0.116
 
@@ -55,3 +56,18 @@ jobs:
           [[ $(select_suite '') == all && $(select_suite malformed) == all ]]
           echo "Missing or invalid advice: all. Effective result: $(select_suite "$ADVICE")." >> "$GITHUB_STEP_SUMMARY"
           echo "provider=${ADVICE:-unavailable} fallback=all"
+
+  network:
+    name: Inference Hub reachability from hosted Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Probe the Responses endpoint without credentials or inference
+        run: |
+          status=$(curl --disable --noproxy '*' --silent --show-error --output /dev/null \
+            --connect-timeout 5 --max-time 15 --write-out '%{http_code}' \
+            --header 'Content-Type: application/json' --data '{}' \
+            https://inference-api.nvidia.com/v1/responses)
+          echo "GitHub-hosted unauthenticated POST: HTTP $status" | tee -a "$GITHUB_STEP_SUMMARY"
+          [[ $status == 401 ]]
