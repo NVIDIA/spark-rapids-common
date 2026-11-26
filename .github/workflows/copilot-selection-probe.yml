@@ -1,0 +1,73 @@
+# Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Copilot selection probe
+on:
+  push:
+    branches: [probe/copilot-ci-selection]
+permissions: {}
+
+jobs:
+  probe:
+    if: github.repository == 'NVIDIA/spark-rapids-common'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      copilot-requests: write
+    steps:
+      - name: Install the pinned CLI
+        id: install
+        if: github.event.created
+        continue-on-error: true
+        run: npm install --prefix "$RUNNER_TEMP/probe-cli" @github/copilot@1.0.116
+
+      - name: Classify a synthetic path with the workflow token
+        id: model
+        if: steps.install.outcome == 'success'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          cd "$(mktemp -d)"
+          cli="$RUNNER_TEMP/probe-cli/node_modules/.bin/copilot"
+          status=0
+          timeout 90s "$cli" --silent --no-custom-instructions --disable-builtin-mcps --available-tools --no-ask-user \
+            -p 'Classify a synthetic change to an integration test body in integration_tests/src/main/python/join_test.py. Reply with exactly one of: integration, docs, all. Do not use tools.' \
+            > answer 2> diagnostic || status=$?
+          response=$(tr -d '[:space:]' < answer)
+          if [[ $status == 0 && $response == integration ]]; then
+            echo 'advice=integration' >> "$GITHUB_OUTPUT"
+            echo 'Copilot returned the expected integration classification.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            # Print known diagnostic categories, not the token, model output, or raw CLI log.
+            reason=$(grep -Eio 'HTTP [45][0-9]{2}|403|401|not enabled|not authorized|access denied|policy|not entitled|subscription|unauthorized|authentication failed|not authenticated|failed to authenticate|unknown option' answer diagnostic | head -c 240 || :)
+            echo "No verified Copilot response (exit=$status; diagnostic=${reason:-unclassified})." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Verify conservative fallback separately
+        env:
+          ADVICE: ${{ steps.model.outputs.advice }}
+        run: |
+          select_suite() {
+            case "$1" in
+              integration) echo integration ;;
+              *) echo all ;;
+            esac
+          }
+          [[ $(select_suite '') == all && $(select_suite malformed) == all ]]
+          echo "Missing or invalid advice: all. Effective result: $(select_suite "$ADVICE")." >> "$GITHUB_STEP_SUMMARY"
+          echo "provider=${ADVICE:-unavailable} fallback=all"
+
+  network:
+    name: Inference Hub reachability from hosted Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Probe the Responses endpoint without credentials or inference
+        run: |
+          status=$(curl --disable --noproxy '*' --silent --show-error --output /dev/null \
+            --connect-timeout 5 --max-time 15 --write-out '%{http_code}' \
+            --header 'Content-Type: application/json' --data '{}' \
+            https://inference-api.nvidia.com/v1/responses)
+          echo "GitHub-hosted unauthenticated POST: HTTP $status" | tee -a "$GITHUB_STEP_SUMMARY"
+          [[ $status == 401 ]]
